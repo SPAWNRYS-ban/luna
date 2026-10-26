@@ -1,0 +1,13 @@
+name: yam/lua-runtime
+version: 0.1.18
+license: MIT
+description: Lua and Quasar host runtime for YAM packages
+targets: [yandexmicro, yandexmini_2, yandexmidi, yandexplum]
+files:
+  bin/yam-lua-runtime: target/$YAM_TRIPLE/release/yam-lua-runtime
+  share/lua-runtime/web/: web/
+services:
+  lua-runtime:
+    exec: [bin/yam-lua-runtime, --data-dir, "${YAM_VAR}"]
+    restart: always
+    after: [network]
