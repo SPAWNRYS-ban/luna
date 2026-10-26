@@ -1,13 +1,17 @@
-# YAM Lua runtime host
+# Lua runtime
 
-This is a host package, separate from the YAM v2 package manager. It owns the
-Lua/Quasar API, embedded web interface, legacy `.yap` archives, `plugin.toml`,
-and the runtime-specific permission model.
+Отдельный host-пакет для Lua, Quasar API, веб-интерфейса, старых `.yap`,
+`plugin.toml` и их модели разрешений. Ядро `yam` не читает, не устанавливает и
+не запускает такие плагины.
 
-The generic `yam` core does not parse, install, authorize, or execute plugins.
-Build the host with `cargo build --release --locked` in this directory. Package
-it with the root YAM CLI after supplying the platform-target binary named by
-`yam.yaml`.
+Сборка:
 
-`tools/convert_apkg.py` is an offline APKG-to-`.yap` converter for this runtime
-only; it does not produce or install a v2 `.yampkg`.
+```sh
+cargo build --release --locked
+```
+
+Затем укажите собранный бинарный файл для нужной платформы в `yam.yaml` и
+соберите пакет корневой командой `yam pack`.
+
+`tools/convert_apkg.py` — офлайн-конвертер APKG в `.yap` только для этого
+runtime. Он не создаёт и не устанавливает `.yampkg`.
