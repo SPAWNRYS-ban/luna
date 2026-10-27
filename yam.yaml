@@ -1,13 +1,13 @@
-name: yam/lua-runtime
-version: 0.1.18
+name: yam/luna
+version: 0.2.0
 license: MIT
-description: Lua and Quasar host runtime for YAM packages
+description: Luna host runtime for Lua, Quasar and legacy plugins
 targets: [yandexmicro, yandexmini_2, yandexmidi, yandexplum]
 files:
-  bin/yam-lua-runtime: target/$YAM_TRIPLE/release/yam-lua-runtime
-  share/lua-runtime/web/: web/
+  bin/luna: target/$YAM_TRIPLE/release/luna
+  share/luna/web/: web/
 services:
-  lua-runtime:
-    exec: [bin/yam-lua-runtime, --data-dir, "${YAM_VAR}"]
+  luna:
+    exec: [bin/luna, --data-dir, "${YAM_VAR}"]
     restart: always
     after: [network]
