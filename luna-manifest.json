@@ -4,6 +4,8 @@
   "devices": [
     {
       "device": "yandexmini3",
+      "codename": "bergamot",
+      "yam_target": "bergamot",
       "manifest_path": "stations/yandexmini3/Cargo.toml",
       "models": ["yandexmini3", "yandex-mini3"],
       "binary": "luna-yandexmini3",
@@ -12,6 +14,8 @@
     },
     {
       "device": "yandexmini",
+      "codename": "mango",
+      "yam_target": "mango",
       "manifest_path": "stations/yandexmini/Cargo.toml",
       "models": ["yandexmini", "yandexstationmini", "yandex-station-mini", "yndx-0004"],
       "binary": "luna-yandexmini",
@@ -20,6 +24,8 @@
     },
     {
       "device": "yandexmicro",
+      "codename": "yandexmicro",
+      "yam_target": "yandexmicro",
       "manifest_path": "stations/yandexmicro/Cargo.toml",
       "models": ["yandexmicro", "yandex-station-lite", "yandexstationmicro"],
       "binary": "luna-yandexmicro",
@@ -28,6 +34,8 @@
     },
     {
       "device": "yandexmini_2",
+      "codename": "yandexmini_2",
+      "yam_target": "yandexmini_2",
       "manifest_path": "stations/yandexmini_2/Cargo.toml",
       "models": ["yandexmini_2", "yandexmini2", "yandexstationmini2", "yandex-station-mini2"],
       "binary": "luna-yandexmini_2",
@@ -36,6 +44,8 @@
     },
     {
       "device": "yandexmidi",
+      "codename": "cucumber",
+      "yam_target": "cucumber",
       "manifest_path": "stations/yandexmidi/Cargo.toml",
       "models": ["yandexmidi", "yandexcucumber", "yandex-station-midi"],
       "binary": "luna-yandexmidi",
@@ -44,6 +54,8 @@
     },
     {
       "device": "yandexplum",
+      "codename": "plum",
+      "yam_target": "plum",
       "manifest_path": "stations/yandexplum/Cargo.toml",
       "models": ["yandexplum", "yandex-station-lite-2", "yandex-station-lite2"],
       "binary": "luna-yandexplum",

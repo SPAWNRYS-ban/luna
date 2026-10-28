@@ -118,6 +118,16 @@ cargo test --workspace --locked
 
 `tools/build-deploy.sh` и `tools/release.sh` используются локально владельцем
 репозитория для deploy и публикации релизов и намеренно не входят в Git.
+Локальный `tools/release.sh` одним запуском собирает все станции, создаёт
+station-specific `.yampkg`, публикует их в YAM Registry и добавляет бинарники,
+пакеты и checksum-файлы в GitHub Release:
+
+```sh
+tools/release.sh --update
+```
+
+Для registry скрипт использует `publish.env` и ключ из каталога публикации
+YAM, который можно переопределить через `--yam-publish-dir`.
 
 ## Лицензия
 
