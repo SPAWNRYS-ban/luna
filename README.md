@@ -1,40 +1,46 @@
 # Luna
 
-> Универсальный Lua runtime и HTTP-шлюз для станций Яндекса.
+Luna — runtime и API-слой для пакетов, которым нужно работать с разными
+моделями станций Яндекса.
 
-Luna связывает Lua-плагины и HTTP API с реальным железом станции. Аппаратная
-логика не зашита в общий gateway: каждая модель собирается отдельным crate и
-сама описывает свои LED, кнопки, часы, аудио и другие capabilities.
+Главная задача Luna — дать пакету единый API, скрывающий различия железа.
+Пакет работает с `Luna API`, а station crate конкретной модели переводит эти
+операции в sysfs, I²C, ALSA, evdev и другие локальные интерфейсы устройства.
 
-[API reference](docs/API.md) · [Lua/YAM plugins](docs/PLUGINS.md) · [Manifest](luna-manifest.json)
+```text
+Lua-пакет
+   │  Luna API / permissions
+   ▼
+Luna gateway
+   │  единый hardware contract
+   ▼
+station crate → конкретное железо станции
+```
 
-## Быстрая установка
+## Документация
 
-Установщики скачивают подходящий asset из GitHub Release, сверяют SHA-256,
-определяют модель и архитектуру станции, устанавливают Luna в
-`/data/quazar/luna` и создают автозапуск `/etc/init.d/S99luna`.
+- [Гайд: как строить пакет на Luna](docs/PACKAGE_GUIDE.md)
+- [Полный HTTP API](docs/API.md)
+- [Плагины через YAM](docs/PLUGINS.md)
+- [Manifest поддерживаемых станций](luna-manifest.json)
 
-Требования: Android Platform Tools с `adb`, подключённая станция и включённая
-ADB-отладка.
+## Установка
 
 ### macOS / Linux
+
+Нужны `adb`, подключённая станция и включённая ADB-отладка:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/nyakokitsu/luna/main/install.sh | sh
 ```
 
-Для конкретной станции или версии:
+Для нескольких станций установщик предложит выбор. Для конкретной станции:
 
 ```sh
 ADB_SERIAL=<serial> sh install.sh
-sh install.sh v0.2.0
 ```
 
-При нескольких устройствах установщик предложит интерактивный выбор.
-
 ### Windows PowerShell
-
-WSL, Python и YAM не нужны:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
@@ -42,180 +48,61 @@ irm https://raw.githubusercontent.com/nyakokitsu/luna/main/install.ps1 -OutFile 
 .\install.ps1
 ```
 
-Дополнительные параметры:
+Установщик сам получает hostname через `uname -n`, находит его в `models`
+релизного manifest и скачивает соответствующий бинарь.
+
+Удаление:
 
 ```powershell
-.\install.ps1 -Serial <serial>
-.\install.ps1 -Version v0.2.0
-.\install.ps1 -Serial <serial> -Uninstall
+.\install.ps1 -Uninstall
 ```
 
-### Установка через YAM
-
-Если на станции уже установлен YAM и настроен registry, Luna можно поставить
-как обычный пакет. YAM сам выберет опубликованный артефакт под платформу:
+### Через YAM
 
 ```sh
-yam --platform yandexmicro install yam/luna
+yam --platform yandexmini3 install yam/luna
 ```
 
-Для других станций используйте соответствующий platform ID: `yandexmini`,
-`yandexmini_2`, `yandexmini3`, `yandexmidi` или `yandexplum`.
+YAM выбирает пакет под платформу станции. Standalone-установщик и установка
+через YAM — альтернативные способы; не используйте их одновременно с одним
+и тем же `data-dir`.
 
-Проверить план установки без изменений:
+## Что даёт Luna пакету
 
-```sh
-yam --platform yandexmicro plan yam/luna
-```
+- единый Lua API для LED, часов, громкости, input, сенсоров, аудио и IPC;
+- `is_available()` и device topology для безопасной работы на разных моделях;
+- permissions и ограничения сети, input, IPC, команд и системных операций;
+- единый HTTP API для управления и диагностики;
+- запуск Lua-пакетов через локальную установку или YAM;
+- отдельные station crates без хардкода аппаратных параметров в gateway.
 
-Standalone-установщик и пакет YAM — два независимых способа установки. Не
-запускайте их одновременно на одном `--data-dir`.
-
-## Возможности
-
-- отдельный бинарник под каждую поддерживаемую станцию;
-- общий HTTP API и встроенная веб-панель;
-- Lua runtime для пакетов и пользовательских скриптов;
-- permissions для Lua: LED, input, network, audio, system и другие;
-- LED ring/logo с равномерным распределением цветов;
-- кнопки и распознанные жесты Mini 3;
-- сегментные часы, датчики, громкость и системные capabilities;
-- локальная метка комнаты для API, веб-панели и Lua;
-- установка напрямую через ADB, без YAM.
-
-## Архитектура
-
-```text
-HTTP / Web UI
-      │
-      ▼
-src/main.rs → src/gateway.rs → station crate
-                              ├── device.rs
-                              ├── station_main.rs
-                              └── hardware.rs / capabilities
-```
-
-Каждая станция живёт в собственной папке `stations/<device>/`. Общий gateway
-не содержит таблиц аппаратных параметров. Модели, codename, Rust target и
-release asset описаны в [`luna-manifest.json`](luna-manifest.json).
+Пакет не должен определять модель по sysfs-путям и не должен напрямую открывать
+I²C/ALSA/evdev. Он проверяет capability и вызывает Luna API.
 
 ## Поддерживаемые станции
 
-| Модель | Codename | Бинарник | Target |
-| --- | --- | --- | --- |
-| `yandexmini3` | `bergamot` | `luna-yandexmini3` | `aarch64-unknown-linux-musl` |
-| `yandexmini` | `mango` | `luna-yandexmini` | `armv7-unknown-linux-musleabihf` |
-| `yandexmicro` | `yandexmicro` | `luna-yandexmicro` | `aarch64-unknown-linux-musl` |
-| `yandexmini_2` | `yandexmini_2` | `luna-yandexmini_2` | `aarch64-unknown-linux-musl` |
-| `yandexmidi` | `cucumber` | `luna-yandexmidi` | `aarch64-unknown-linux-musl` |
-| `yandexplum` | `plum` | `luna-yandexplum` | `aarch64-unknown-linux-musl` |
+| Device | Codename | Target |
+| --- | --- | --- |
+| `yandexmini3` | `bergamot` | `aarch64-unknown-linux-musl` |
+| `yandexmini` | `mango` | `armv7-unknown-linux-musleabihf` |
+| `yandexmicro` | `yandexmicro` | `aarch64-unknown-linux-musl` |
+| `yandexmini_2` | `yandexmini_2` | `aarch64-unknown-linux-musl` |
+| `yandexmidi` | `cucumber` | `aarch64-unknown-linux-musl` |
+| `yandexplum` | `plum` | `aarch64-unknown-linux-musl` |
 
-Неизвестная модель считается неподдерживаемой. Для добавления станции нужны
-новый crate, hardware/capabilities и запись в manifest.
-
-## API
-
-После установки API доступен на порту `8099`:
-
-```sh
-BASE=http://<IP Станции>:8099/api
-curl "$BASE/device"
-```
-
-Основные группы:
-
-| Группа | Назначение |
-| --- | --- |
-| `/device` | модель, архитектура, topology и capabilities |
-| `/led` | ring/logo, цвета и выключение |
-| `/clock` | сегментные часы |
-| `/input` | input devices, кнопки и жесты |
-| `/settings` | настройки Luna и permissions |
-| `/lua` | пользовательские Lua-файлы |
-| `/plugins` | управление плагинами |
-| `/runtime` | состояние runtime |
-
-Пример LED:
-
-```sh
-curl -X POST "$BASE/led/ring" \
-  -H 'Content-Type: application/json' \
-  -d '{"colors":["#FF0000","#0000FF"]}'
-```
-
-Успешные синхронные операции возвращают `200 OK`. Асинхронные операции
-возвращают `202 Accepted`, ошибки — HTTP-код и JSON:
-
-```json
-{"error":"описание ошибки"}
-```
-
-Возможность конкретной функции сначала проверяйте через capabilities в
-`GET /api/device`. В Lua используйте `.is_available()`; для LED доступны
-`device.has_ring`, `device.ring_count`, `device.has_logo` и
-`device.logo_count`.
-
-Полное описание endpoint-ов и примеры запросов: [docs/API.md](docs/API.md).
-
-Локальную комнату станции можно задать через `PUT /api/room` или командой
-`luna --data-dir <data-dir> room "Кухня"`. Она хранится отдельно от профиля
-устройства и доступна в Lua как `device.room`.
-
-## Пользовательский Lua
-
-Скрипты можно хранить в `share/lua` и запускать без установки пакета.
-Функция отключена по умолчанию и включается через `lua.enabled`. Для каждого
-скрипта действуют отдельные permissions и ограничение времени выполнения.
-
-Особенно опасные возможности — бесконечные циклы, сеть, `exec`, IPC и
-команды — выключены по умолчанию. Настройки меняются через
-`PUT /api/settings` или веб-панель.
-
-## Сборка
-
-Host-сборка:
-
-```sh
-cargo build --release --locked
-```
-
-Сборка всех станций:
-
-```sh
-tools/build-stations.sh
-```
-
-Сборка одной станции:
-
-```sh
-tools/build.sh --device yandexmidi
-```
-
-Или запустите `tools/build.sh` без параметров для выбора стрелками. Для
-кросс-сборки на macOS установите targets:
-
-```sh
-rustup target add aarch64-unknown-linux-musl
-rustup target add armv7-unknown-linux-musleabihf
-```
-
-Результат появляется в `dist/`: бинарники находятся в `dist/assets/`,
-описание assets — в `dist/manifest.json`, checksums — в
-`dist/SHA256SUMS`.
-
-Проверка workspace:
+## Разработка Luna
 
 ```sh
 cargo test --workspace --locked
+tools/build-stations.sh
 ```
 
-## Разработка станции
+Для новой станции создаётся `stations/<device>/` со своими `device.rs`,
+`station_main.rs` и hardware/capability-модулями. Общий gateway должен
+оставаться независимым от конкретных sysfs-путей и I²C-адресов.
 
-1. Создайте `stations/<device>/`.
-2. Добавьте `Cargo.toml`, `station_main.rs`, hardware и capability-модули.
-3. Зарегистрируйте crate в workspace.
-4. Добавьте модель, codename, target и asset в `luna-manifest.json`.
-5. Соберите конкретную станцию и проверьте её API.
+Релиз всех станций:
 
-Локальные `tools/release.sh` и `tools/build-deploy.sh` используются для
-публикации и deploy и не входят в Git. Условия лицензии будут добавлены позже.
+```sh
+tools/release.sh --update
+```

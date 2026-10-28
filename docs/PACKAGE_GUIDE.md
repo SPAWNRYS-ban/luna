@@ -1,0 +1,307 @@
+# Гайд: как строить пакет на Luna
+
+Этот документ описывает правильную модель разработки Luna-пакета.
+
+Luna — не библиотека, которую пакет встраивает в себя. Это runtime и gateway,
+уже работающий на станции. Пакет загружается в Luna, получает Lua API и
+общается с железом только через этот API.
+
+```text
+пакет → Luna API → capability station crate → железо
+```
+
+Благодаря этому один и тот же Lua-код может работать на Mini, Mini 3, Midi,
+Micro и других станциях. Различия LED, кнопок, часов и драйверов остаются
+внутри station crate.
+
+## 1. Создайте структуру пакета
+
+Рекомендуемая структура исходников:
+
+```text
+my-plugin/
+├── yam.yaml
+└── plugin/
+    ├── plugin.toml
+    └── main.lua
+```
+
+Для пакета `vasya/clock` Yam создаст каталог Luna:
+
+```text
+share/luna/plugins/vasya.clock/
+├── plugin.toml
+└── main.lua
+```
+
+Точка в каталоге — это только формат идентификатора Luna-плагина. Имя пакета
+Yam остаётся в формате `namespace/name`.
+
+## 2. Опишите пакет Yam
+
+`yam.yaml`:
+
+```yaml
+name: vasya/clock
+version: 1.0.0
+license: MIT
+description: Показывает состояние пакета на LED
+targets: [any]
+depends: [yam/luna ^0.2]
+files:
+  share/luna/plugins/vasya.clock/: plugin/
+```
+
+`targets: [any]` подходит для чистого Lua-пакета: в нём нет native-бинарника,
+поэтому код не зависит от CPU и libc станции.
+
+Зависимость `yam/luna` нужна пакетному менеджеру, чтобы пакет ставился рядом с
+Luna. Сам Lua-код не импортирует Luna и не содержит отдельного runtime.
+
+## 3. Опишите manifest Luna
+
+`plugin/plugin.toml`:
+
+```toml
+id = "vasya.clock"
+name = "Luna Clock"
+version = "1.0.0"
+entry = "main.lua"
+description = "Пример Lua-пакета для Luna"
+permissions = ["led", "clock"]
+
+[compatibility]
+features = ["led.ring.rgb"]
+```
+
+Обязательные поля:
+
+| Поле | Назначение |
+|---|---|
+| `id` | Должен совпадать с каталогом `namespace.name` |
+| `name` | Отображаемое имя |
+| `version` | Версия самого плагина |
+| `entry` | Lua-файл относительно каталога плагина |
+| `permissions` | Явный список разрешённых API |
+| `[compatibility]` | Требования к модели или capability станции |
+
+Пример совместимости только с Mini 3:
+
+```toml
+[compatibility]
+models = ["yandexmini3"]
+features = ["input.evdev"]
+```
+
+Если capability нет, Luna покажет пакет как несовместимый. Не копируйте в
+пакет sysfs-пути, I²C-адреса или названия устройств — это ломает переносимость.
+
+## 4. Напишите Lua-код
+
+Минимальный пример:
+
+```lua
+if not device.has_ring then
+  return
+end
+
+if alice.led.set.ring.is_available() then
+  alice.led.set.ring({"#00aaff"})
+end
+```
+
+Устройство описывается через `device`:
+
+```lua
+device.model
+device.architecture
+device.has_ring
+device.ring_count
+device.has_logo
+device.logo_count
+device.features
+device.room
+```
+
+Есть и совместимые PascalCase-имена: `device.HasRing`, `device.RingCount`,
+`device.HasLogo`, `device.LogoCount`.
+
+Проверка `is_available()` нужна всегда, если capability может отсутствовать на
+части станций:
+
+```lua
+if alice.clock.is_available() then
+  alice.clock.time("12:34", 180)
+end
+
+if alice.input.is_available() then
+  local event = alice.input.next_event(1000)
+end
+```
+
+`is_available()` проверяет железо. Это не заменяет permission в manifest:
+permission тоже должен быть объявлен.
+
+### LED
+
+```lua
+-- Все зоны, доступные станции
+alice.led.set({"#ff0000", "#0000ff"})
+
+-- Только ring
+alice.led.set.ring({"#00ff00"})
+
+-- Только logo, если он есть
+if alice.led.set.logo.is_available() then
+  alice.led.set.logo({"#ffffff"})
+end
+
+alice.led.off()
+alice.led.off.ring()
+alice.led.off.logo()
+```
+
+Luna сама равномерно распределяет переданные цвета по физическим LED. Пакет не
+должен знать, что на одной станции ring имеет 6 LED, а на другой — 24.
+
+### Часы, input и сенсоры
+
+```lua
+if alice.clock.is_available() then
+  alice.clock.time("12:34", 200)
+end
+
+if alice.input.is_available() then
+  local event = alice.input.next_event(5000)
+  if event and event.action == "volume_up" then
+    -- реакция на кнопку +
+  end
+end
+
+if alice.sensors.is_available() then
+  local sensors = alice.sensors.list()
+end
+```
+
+Для точного набора Lua-методов и HTTP-эквивалентов используйте
+[docs/API.md](API.md).
+
+## 5. Permissions
+
+Запрашивайте только необходимые разрешения:
+
+| Permission | Доступ |
+|---|---|
+| `led` | LED ring/logo и выключение |
+| `clock` | сегментные часы |
+| `input` | input events и semantic actions |
+| `volume` | громкость |
+| `audio` | проигрывание аудио |
+| `microphone` | микрофон |
+| `bluetooth` | Bluetooth |
+| `display` | backlight/display |
+| `sensors` | сенсоры |
+| `network` | HTTP в рамках network policy |
+| `ipc.read` | чтение разрешённых IPC-сервисов |
+| `ipc.control` | управление разрешёнными IPC-сервисами |
+| `commands` | голосовые команды из manifest |
+| `system` | read-only информация о системе |
+| `exec` | запуск команд; для binary execution нужен отдельный флаг Luna |
+
+Например, сетевой пакет должен явно описать список хостов:
+
+```toml
+permissions = ["network"]
+
+[network]
+allow = ["api.example.com"]
+```
+
+Отсутствующее permission должно считаться ошибкой разработки, а не поводом
+просить пользователя включить всё сразу.
+
+## 6. Соберите и установите
+
+Упаковка:
+
+```sh
+yam-publish pack --source . --platform yandexmini3 \
+  --profiles /path/to/yam/platforms \
+  --output luna-clock-1.0.0.yampkg
+```
+
+Для чистого Lua-пакета используйте `targets: [any]` и опубликуйте пакет через
+обычный registry Yam:
+
+```sh
+yam install vasya/clock
+```
+
+После установки Luna найдёт его в `share/luna/plugins`. Проверка:
+
+```sh
+curl http://<IP Станции>:8099/api/plugins
+curl http://<IP Станции>:8099/api/plugins/sources
+```
+
+Плагин из Yam имеет `source: "yam"`. Его файлы принадлежат Yam, поэтому Luna
+не удаляет их и не заменяет загрузкой `.yap`. Удаление выполняется так:
+
+```sh
+yam remove vasya/clock
+```
+
+## 7. Локальная разработка
+
+Для быстрого теста можно собрать `.yap` и установить его через Luna API:
+
+```sh
+curl -X POST http://<IP Станции>:8099/api/plugins \
+  -F 'package=@luna-clock-1.0.0.yap'
+curl http://<IP Станции>:8099/api/plugins
+```
+
+Запуск и остановка выполняются через `/api/plugins/<id>/invoke` и
+`/api/plugins/<id>/stop`. Для локального тестирования ограничьте слушатель:
+
+```sh
+luna --listen 127.0.0.1:8100 --data-dir /tmp/luna-test
+```
+
+## 8. Проверка на разных станциях
+
+Минимальный чек-лист:
+
+1. `GET /api/device` — проверить модель и `features`.
+2. Проверить `is_available()` перед каждой необязательной capability.
+3. Проверить `device.has_ring/logo` и количество LED.
+4. Проверить отсутствие железных путей в исходниках пакета.
+5. Запустить пакет на станциях с разной topology LED.
+6. Проверить остановку и повторный запуск пакета.
+
+Если пакет содержит native-код, это уже не переносимый Lua-пакет: для каждой
+архитектуры нужен отдельный target и отдельный артефакт. По возможности
+выносите аппаратную часть в Luna station crate, а пакет оставляйте Lua-only.
+
+## 9. Типичные ошибки
+
+### `permission denied`
+
+Добавьте нужное permission в `plugin.toml`. Настройки Luna не могут выдать
+пакету permission, которого нет в его manifest.
+
+### `capability is unavailable`
+
+Проверьте `GET /api/device`, `device.*` и `is_available()`. Не предполагайте,
+что наличие capability на одной модели означает её наличие на всех.
+
+### Плагин не запускается после установки Yam
+
+Проверьте `GET /api/plugins/sources`, затем:
+
+```sh
+curl -X POST http://<IP Станции>:8099/api/plugins/rescan
+```
+
+Также проверьте, что каталог имеет формат `namespace.name`, а `id` в
+`plugin.toml` совпадает с ним.
