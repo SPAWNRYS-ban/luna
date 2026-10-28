@@ -67,22 +67,8 @@ echo "Luna removed"
     Invoke-WebRequest "$url/SHA256SUMS" -OutFile "$temp/SHA256SUMS" -UseBasicParsing
     $manifest = Get-Content "$temp/manifest.json" -Raw | ConvertFrom-Json
     Log "Detecting station"
-    $unameA = Invoke-AdbOptional 'uname -a'
-    $hostname = Invoke-AdbOptional 'uname -n'
-    $arch = Invoke-AdbOptional 'uname -m'
-    $abi = Invoke-AdbOptional 'getprop ro.product.cpu.abi'
-    $model = Invoke-AdbOptional 'getprop ro.product.model'
-    $device = Invoke-AdbOptional 'getprop ro.product.device'
-    $dt = ""
-    $compatible = ""
-    if ($arch -eq 'arm64-v8a') { $arch = 'aarch64' }
-    if ($arch -eq 'armeabi-v7a') { $arch = 'armv7' }
-    if (-not $arch -and $abi -eq 'arm64-v8a') { $arch = 'aarch64' }
-    if (-not $arch -and $abi -eq 'armeabi-v7a') { $arch = 'armv7' }
-    if ($arch -notin @('aarch64', 'arm64', 'armv7', 'armv7l', 'arm') -and $unameA -match '\b(aarch64|armv7l|armv7|arm64)\b') { $arch = $Matches[1] }
-    $arch = $arch.Trim().ToLowerInvariant()
-    $values = @($unameA, $hostname, $model, $device, $dt, $compatible) |
-        Where-Object { $_ -and $_ -notmatch '^-sh: .*not found' }
+    $hostname = Invoke-AdbShell 'uname -n'
+    $values = @($hostname.Trim()) | Where-Object { $_ }
     $ids = @($values | ForEach-Object { Compact $_ })
     $found = @()
     foreach ($entry in @($manifest.devices)) {
@@ -103,10 +89,10 @@ echo "Luna removed"
         }
         if ($nameMatch) { $found += $entry }
     }
-    if ($found.Count -ne 1) { throw "Unsupported or ambiguous station. Detected: $($values -join ', ') (arch=$arch, abi=$abi)" }
+    if ($found.Count -ne 1) { throw "Unsupported or ambiguous station. Detected: $($values -join ', ')" }
     $entry = $found[0]
     $asset = $entry.asset
-    Log "Detected $($entry.device) ($($entry.codename)) [$arch]"
+    Log "Detected $($entry.device) ($($entry.codename)) from hostname $hostname"
     Log "Downloading $asset"
     Invoke-WebRequest "$url/$asset" -OutFile "$temp/$asset" -UseBasicParsing
     $sumLine = Get-Content "$temp/SHA256SUMS" | Where-Object { $_ -match "\s$([regex]::Escape($asset))$" } | Select-Object -First 1

@@ -47,18 +47,8 @@ download "$URL/SHA256SUMS" "$TMP/SHA256SUMS"
 download "$URL/manifest.json" "$TMP/manifest.json"
 adb_optional() { adb -s "$SERIAL" shell "$1" 2>/dev/null || true; }
 log "Detecting station"
-UNAME_A=$(adb_optional 'uname -a')
 HOSTNAME=$(adb_optional 'uname -n')
-ARCH=$(adb_optional 'uname -m')
-MODEL=$(adb_optional 'getprop ro.product.model')
-DEVICE=$(adb_optional 'getprop ro.product.device')
-DT=$(adb_optional 'cat /proc/device-tree/model')
-COMPAT=$(adb_optional 'cat /proc/device-tree/compatible | tr "\000" "\n"')
-case "$ARCH" in
-  aarch64|arm64|armv7|armv7l|arm) ;;
-  *) ARCH=$(printf '%s\n' "$UNAME_A" | sed -nE 's/.*(aarch64|armv7l|armv7|arm64).*/\1/p' | head -n1) ;;
-esac
-CANDIDATES=$(printf '%s\n' "$UNAME_A" "$HOSTNAME" "$MODEL" "$DEVICE" "$DT" "$COMPAT" | sed '/^$/d')
+CANDIDATES=$(printf '%s\n' "$HOSTNAME" | sed '/^$/d')
 RECORD=$(python3 - "$TMP/manifest.json" "$CANDIDATES" <<'PY'
 import json, re, sys
 data=json.load(open(sys.argv[1], encoding="utf-8"))
@@ -81,7 +71,7 @@ PY
 IFS="$(printf '\t')" read -r DEVICE ASSET CODENAME <<EOF
 $RECORD
 EOF
-echo "Detected $DEVICE${CODENAME:+ ($CODENAME)} ($ARCH)" >&2
+echo "Detected $DEVICE${CODENAME:+ ($CODENAME)} from hostname $HOSTNAME" >&2
 log "Downloading $ASSET"
 download "$URL/$ASSET" "$TMP/$ASSET"
 log "Verifying checksum"
