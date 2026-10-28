@@ -7,6 +7,8 @@ use std::{
 
 const APLAY_PATHS: &[&str] = &["/system/workdir/bin/aplay", "/usr/bin/aplay"];
 const ALSA_LIBS: &str = "/bkupgrade/data/bundle/ap2/libs:/system/workdir/lib";
+const ALSA_CONFIG: &str = "/bkupgrade/data/bundle/ap2/asound.conf";
+const ALSA_DEVICE: &str = "sps48";
 const MAX_AUDIO_BYTES: usize = 64 * 1024 * 1024;
 const MAX_PLAYBACK_SECONDS: u64 = 600;
 
@@ -28,7 +30,11 @@ fn find_aplay() -> Option<PathBuf> {
 fn command(path: &Path) -> Command {
     let mut command = Command::new(path);
     if path == Path::new(APLAY_PATHS[0]) {
-        command.env("LD_LIBRARY_PATH", ALSA_LIBS);
+        command
+            .env("LD_LIBRARY_PATH", ALSA_LIBS)
+            .env("ALSA_CONFIG_PATH", ALSA_CONFIG)
+            .arg("-D")
+            .arg(ALSA_DEVICE);
     }
     command
 }
