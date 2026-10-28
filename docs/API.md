@@ -91,12 +91,112 @@ curl -X PUT "$BASE/settings" \
     },
     "web":{"ui":true,"api":true},
     "allow_plugin_binaries":false,
-    "updates":{"enabled":false,"interval_minutes":360}
+    "updates":{"enabled":false,"interval_minutes":360},
+    "lua": {
+      "enabled": true,
+      "share_dir": "share/lua",
+      "max_runtime_seconds": 30,
+      "allow_infinite_loops": false,
+      "permissions": {
+        "led": true,
+        "volume": false,
+        "audio": false,
+        "microphone": false,
+        "bluetooth": false,
+        "display": false,
+        "sensors": false,
+        "clock": false,
+        "input": false,
+        "network": false,
+        "ipc_read": false,
+        "ipc_control": false,
+        "commands": false,
+        "system": false,
+        "exec": false
+      },
+      "network_allow": [],
+      "input_devices": [],
+      "ipc_services": [],
+      "command_phrases": []
+    }
   }'
 ```
 
 `led.count` должен быть в диапазоне `1..128`. Новые неполные
 `settings.toml` без `[led]` Luna умеет дополнять defaults.
+
+## User Lua без установки пакета
+
+Пользовательские Lua-файлы можно хранить в `${YAM_VAR}/share/lua/`. По
+умолчанию для station runtime это `/opt/yam/share/lua/`. Файл не нужно
+упаковывать в `.yap`: Luna запускает его через отдельный user-Lua runner.
+Режим отключён по умолчанию и включается через `lua.enabled = true`.
+
+Список файлов:
+
+```sh
+curl "$BASE/lua/files"
+```
+
+Запуск:
+
+```sh
+curl -X POST "$BASE/lua/run" \
+  -H 'Content-Type: application/json' \
+  -d '{"file":"hello.lua"}'
+```
+
+Ответ содержит id запуска:
+
+```json
+{"id":"user_lua_...","file":"hello.lua","status":"started"}
+```
+
+Остановка:
+
+```sh
+curl -X POST "$BASE/lua/user_lua_<id>/stop"
+```
+
+Путь ограничен `lua.share_dir`; traversal через `..` и абсолютные пути
+запрещены. Выполнение можно полностью отключить через `lua.enabled`.
+
+### Разрешения user Lua
+
+User Lua получает только разрешения из `lua.permissions`. Все они по умолчанию
+выключены:
+
+| Поле | Что разрешает |
+|---|---|
+| `led` | LED ring/logo |
+| `volume` | изменение громкости |
+| `audio` | проигрывание audio |
+| `microphone` | запись с микрофона |
+| `bluetooth` | BlueZ и Bluetooth scan/pair |
+| `display` | backlight и display API |
+| `sensors` | чтение и управление датчиками |
+| `clock` | сегментные часы |
+| `input` | чтение input events |
+| `network` | HTTP-запросы к `network_allow` |
+| `ipc_read` | чтение разрешённых `ipc_services` |
+| `ipc_control` | отправка команд разрешённым `ipc_services` |
+| `commands` | обработчики разрешённых `command_phrases` |
+| `system` | системная read-only информация |
+| `exec` | вызов команд через Lua API; дополнительно требует `allow_plugin_binaries` |
+
+`network_allow`, `input_devices`, `ipc_services` и `command_phrases` —
+ограничивающие списки. Например, включённый `network` без непустого
+`network_allow` не даёт сетевого доступа.
+
+### Ограничение циклов и времени
+
+По умолчанию Lua-код принудительно останавливается после
+`lua.max_runtime_seconds` и не может бесконечно крутиться в чистом Lua-цикле.
+`allow_infinite_loops = true` отключает лимит времени; ручная остановка через
+endpoint всё равно остаётся доступной.
+
+Даже при разрешённых бесконечных циклах рекомендуется использовать
+`alice.sleep(...)`, чтобы не загружать CPU станции.
 
 ## LED
 

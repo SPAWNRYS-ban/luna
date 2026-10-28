@@ -8,7 +8,7 @@ use axum::{
 };
 use clap::Parser;
 use flate2::read::GzDecoder;
-use mlua::{Lua, LuaOptions, LuaSerdeExt, StdLib};
+use mlua::{HookTriggers, Lua, LuaOptions, LuaSerdeExt, StdLib, VmState};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -137,6 +137,83 @@ struct Settings {
     allow_plugin_binaries: bool,
     #[serde(default)]
     updates: UpdateSettings,
+    #[serde(default)]
+    lua: LuaSettings,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LuaSettings {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default = "default_lua_share_dir")]
+    share_dir: String,
+    #[serde(default = "default_lua_runtime_seconds")]
+    max_runtime_seconds: u64,
+    #[serde(default)]
+    allow_infinite_loops: bool,
+    #[serde(default)]
+    permissions: LuaPermissions,
+    #[serde(default)]
+    network_allow: Vec<String>,
+    #[serde(default)]
+    input_devices: Vec<String>,
+    #[serde(default)]
+    ipc_services: Vec<String>,
+    #[serde(default)]
+    command_phrases: Vec<String>,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct LuaPermissions {
+    #[serde(default)]
+    led: bool,
+    #[serde(default)]
+    volume: bool,
+    #[serde(default)]
+    audio: bool,
+    #[serde(default)]
+    microphone: bool,
+    #[serde(default)]
+    bluetooth: bool,
+    #[serde(default)]
+    display: bool,
+    #[serde(default)]
+    sensors: bool,
+    #[serde(default)]
+    clock: bool,
+    #[serde(default)]
+    input: bool,
+    #[serde(default)]
+    network: bool,
+    #[serde(default)]
+    ipc_read: bool,
+    #[serde(default)]
+    ipc_control: bool,
+    #[serde(default)]
+    commands: bool,
+    #[serde(default)]
+    system: bool,
+    #[serde(default)]
+    exec: bool,
+}
+fn default_lua_share_dir() -> String {
+    "share/lua".into()
+}
+fn default_lua_runtime_seconds() -> u64 {
+    30
+}
+impl Default for LuaSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            share_dir: default_lua_share_dir(),
+            max_runtime_seconds: default_lua_runtime_seconds(),
+            allow_infinite_loops: false,
+            permissions: LuaPermissions::default(),
+            network_allow: Vec::new(),
+            input_devices: Vec::new(),
+            ipc_services: Vec::new(),
+            command_phrases: Vec::new(),
+        }
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct UpdateSettings {
@@ -211,6 +288,7 @@ impl Default for Settings {
             web: WebSettings::default(),
             allow_plugin_binaries: false,
             updates: UpdateSettings::default(),
+            lua: LuaSettings::default(),
         }
     }
 }
@@ -439,6 +517,21 @@ struct Frame {
 struct Invocation {
     #[serde(default)]
     args: Vec<String>,
+}
+#[derive(Debug, Deserialize)]
+struct LuaRunRequest {
+    file: String,
+}
+#[derive(Debug, Serialize)]
+struct LuaFileInfo {
+    file: String,
+    bytes: u64,
+}
+#[derive(Debug, Serialize)]
+struct LuaRunInfo {
+    id: String,
+    file: String,
+    status: &'static str,
 }
 fn frame_delay() -> u64 {
     100
@@ -737,6 +830,9 @@ impl PluginManager {
             if !e.file_type()?.is_dir() {
                 continue;
             };
+            if e.file_name().to_string_lossy().starts_with("user_lua_") {
+                continue;
+            }
             let p = e.path().join("plugin.toml");
             if let Ok(x) = fs::read_to_string(p) {
                 if let Ok(manifest) = toml::from_str::<Manifest>(&x) {
@@ -2262,11 +2358,32 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
     let led = app.led.clone();
     let microphone = app.microphone.clone();
     let clock_backend = app.clock.clone();
+    let lua_settings = app.settings.lock().await.lua.clone();
+    let enforce_user_lua_limits = id.starts_with("user_lua_");
+    let lua_cancelled = cancelled.clone();
     task::spawn_blocking(move || -> Result<()> {
         let lua = Lua::new_with(
             StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::UTF8,
             LuaOptions::default(),
         )?;
+        if enforce_user_lua_limits {
+            let deadline = Instant::now()
+                + Duration::from_secs(lua_settings.max_runtime_seconds.clamp(1, 24 * 60 * 60));
+            lua.set_hook(
+                HookTriggers::new().every_nth_instruction(10_000),
+                move |_lua, _debug| {
+                    if lua_cancelled.load(Ordering::Relaxed) {
+                        return Err(mlua::Error::RuntimeError("Lua script stopped".into()));
+                    }
+                    if !lua_settings.allow_infinite_loops && Instant::now() >= deadline {
+                        return Err(mlua::Error::RuntimeError(
+                            "Lua runtime limit exceeded".into(),
+                        ));
+                    }
+                    Ok(VmState::Continue)
+                },
+            );
+        }
         let globals = lua.globals();
         let api = lua.create_table()?;
         let permissions: HashSet<_> = manifest.permissions.iter().map(String::as_str).collect();
@@ -3278,6 +3395,150 @@ async fn start_package(app: App, id: String, invocation_args: Vec<String>) -> Re
 async fn index() -> Html<&'static str> {
     Html(UI)
 }
+fn lua_permissions(settings: &LuaSettings) -> Vec<String> {
+    let p = &settings.permissions;
+    let mut permissions = Vec::new();
+    for (enabled, name) in [
+        (p.led, "led"),
+        (p.volume, "volume"),
+        (p.audio, "audio"),
+        (p.microphone, "microphone"),
+        (p.bluetooth, "bluetooth"),
+        (p.display, "display"),
+        (p.sensors, "sensors"),
+        (p.clock, "clock"),
+        (p.input, "input"),
+        (p.network, "network"),
+        (p.ipc_read, "ipc.read"),
+        (p.ipc_control, "ipc.control"),
+        (p.commands, "commands"),
+        (p.system, "system"),
+        (p.exec, "exec"),
+    ] {
+        if enabled {
+            permissions.push(name.into());
+        }
+    }
+    permissions
+}
+async fn list_lua_files(State(a): State<App>) -> Result<Json<Vec<LuaFileInfo>>, ApiError> {
+    let settings = a.settings.lock().await.lua.clone();
+    safe_relative(&settings.share_dir)?;
+    let root = a.root.join(&settings.share_dir);
+    let mut files = Vec::new();
+    if root.is_dir() {
+        for entry in walkdir::WalkDir::new(&root) {
+            let entry = entry?;
+            if !entry.file_type().is_file()
+                || entry.path().extension().and_then(|x| x.to_str()) != Some("lua")
+            {
+                continue;
+            }
+            let relative = entry
+                .path()
+                .strip_prefix(&root)?
+                .to_string_lossy()
+                .to_string();
+            files.push(LuaFileInfo {
+                file: relative,
+                bytes: entry.metadata()?.len(),
+            });
+        }
+    }
+    files.sort_by(|left, right| left.file.cmp(&right.file));
+    Ok(Json(files))
+}
+async fn run_lua_file(
+    State(a): State<App>,
+    Json(request): Json<LuaRunRequest>,
+) -> Result<(StatusCode, Json<LuaRunInfo>), ApiError> {
+    let settings = a.settings.lock().await.lua.clone();
+    if !settings.enabled {
+        return Err(ApiError(anyhow!("user Lua execution is disabled")));
+    }
+    safe_relative(&settings.share_dir)?;
+    safe_relative(&request.file)?;
+    if Path::new(&request.file)
+        .extension()
+        .and_then(|x| x.to_str())
+        != Some("lua")
+    {
+        return Err(ApiError(anyhow!("Lua file must have .lua extension")));
+    }
+    let share_root = a.root.join(&settings.share_dir);
+    let source_path = share_root.join(&request.file);
+    if !source_path.is_file() {
+        return Err(ApiError(anyhow!("Lua file not found: {}", request.file)));
+    }
+    let id = format!("user_lua_{}", Uuid::new_v4().simple());
+    let plugin_root = a.root.join("plugins").join(&id);
+    fs::create_dir_all(&plugin_root)?;
+    fs::copy(&source_path, plugin_root.join("main.lua"))?;
+    let manifest = Manifest {
+        id: id.clone(),
+        name: format!("User Lua: {}", request.file),
+        version: "0.0.0".into(),
+        entry: "main.lua".into(),
+        description: "User Lua script from Luna share directory".into(),
+        permissions: lua_permissions(&settings),
+        settings: BTreeMap::new(),
+        network: NetworkPolicy {
+            allow: settings.network_allow.clone(),
+            allow_insecure_http: false,
+        },
+        input: InputPolicy {
+            devices: settings.input_devices.clone(),
+        },
+        ipc: IpcPolicy {
+            services: settings.ipc_services.clone(),
+        },
+        commands: CommandPolicy {
+            phrases: settings.command_phrases.clone(),
+        },
+        compatibility: Compatibility::default(),
+        launch: Launch::default(),
+    };
+    fs::write(
+        plugin_root.join("plugin.toml"),
+        toml::to_string_pretty(&manifest)?,
+    )?;
+    {
+        let mut plugins = a.plugins.lock().await;
+        plugins.enabled.insert(id.clone());
+        plugins.save()?;
+    }
+    if let Err(error) = start_package(a.clone(), id.clone(), Vec::new()).await {
+        let _ = fs::remove_dir_all(&plugin_root);
+        return Err(error.into());
+    }
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(LuaRunInfo {
+            id,
+            file: request.file,
+            status: "started",
+        }),
+    ))
+}
+async fn stop_lua_file(
+    State(a): State<App>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<StatusCode, ApiError> {
+    validate_id(&id)?;
+    if !id.starts_with("user_lua_") {
+        return Err(ApiError(anyhow!("not a user Lua execution")));
+    }
+    let mut plugins = a.plugins.lock().await;
+    if let Some(token) = plugins.running.remove(&id) {
+        token.store(true, Ordering::Relaxed);
+    }
+    plugins.enabled.remove(&id);
+    plugins.service_enabled.remove(&id);
+    plugins.save()?;
+    drop(plugins);
+    let _ = fs::remove_dir_all(a.root.join("plugins").join(&id));
+    Ok(StatusCode::OK)
+}
 async fn list(State(a): State<App>) -> Result<Json<Vec<PluginInfo>>, ApiError> {
     let d = a.device.lock().await.clone();
     Ok(Json(a.plugins.lock().await.list(&d)?))
@@ -3933,6 +4194,12 @@ async fn put_settings(
     if s.web.ui && !s.web.api {
         return Err(ApiError(anyhow!("web.ui requires web.api")));
     }
+    safe_relative(&s.lua.share_dir)?;
+    if s.lua.share_dir.is_empty() || s.lua.max_runtime_seconds == 0 {
+        return Err(ApiError(anyhow!(
+            "lua.share_dir and lua.max_runtime_seconds are required"
+        )));
+    }
     write_atomic(
         &a.root.join("settings.toml"),
         toml::to_string_pretty(&s)?.as_bytes(),
@@ -4230,6 +4497,9 @@ pub async fn run_with_station(station: Option<StationSpec>) -> Result<()> {
             .route("/api/plugins/:id/service/start", post(start_service))
             .route("/api/plugins/:id/stop", post(stop_plugin))
             .route("/api/plugins/:id/logs", get(package_logs))
+            .route("/api/lua/files", get(list_lua_files))
+            .route("/api/lua/run", post(run_lua_file))
+            .route("/api/lua/:id/stop", post(stop_lua_file))
             .route("/api/runtime/:id/device", get(runtime_device))
             .route("/api/runtime/:id/sensors", get(runtime_sensors))
             .route("/api/runtime/:id/led", post(runtime_led))
