@@ -20,6 +20,10 @@ function Compact([string]$Value) {
     $value = $Value.Trim() -replace '[A-Z]{4}$', ''
     return (($value.ToLowerInvariant() -replace '[-_][a-z0-9]{4}$', '') -replace '[^a-z0-9]', '')
 }
+function Read-Marker([string]$Text, [string]$Name) {
+    $match = [regex]::Match($Text, "__LUNA_${Name}__(.*?)(?=__LUNA_|$)", [Text.RegularExpressions.RegexOptions]::Singleline)
+    return $match.Groups[1].Value.Trim([char]13, [char]10, [char]0, [char]32)
+}
 Require-Command "adb"
 if ($RemoteRoot -notmatch '^[A-Za-z0-9_./-]+$') { throw "Invalid remote root" }
 $devices = @((& adb devices) | Where-Object { $_ -match '^([^\s]+)\s+device$' } | ForEach-Object { $Matches[1] })
@@ -58,16 +62,15 @@ echo "Luna removed"
     Invoke-WebRequest "$url/manifest.json" -OutFile "$temp/manifest.json" -UseBasicParsing
     Invoke-WebRequest "$url/SHA256SUMS" -OutFile "$temp/SHA256SUMS" -UseBasicParsing
     $manifest = Get-Content "$temp/manifest.json" -Raw | ConvertFrom-Json
-    $info = Invoke-AdbShell 'printf "__LUNA_UNAME_A__"; uname -a; printf "__LUNA_HOSTNAME__"; uname -n; printf "__LUNA_ARCH__"; uname -m; printf "__LUNA_ABI__"; (getprop ro.product.cpu.abi 2>/dev/null || true); printf "__LUNA_MODEL__"; (getprop ro.product.model 2>/dev/null || true); printf "__LUNA_DEVICE__"; (getprop ro.product.device 2>/dev/null || true); printf "__LUNA_DT__"; (cat /proc/device-tree/model 2>/dev/null || true); printf "__LUNA_COMPAT__"; (cat /proc/device-tree/compatible 2>/dev/null | tr "\000" "\n" || true)'
-    $readMarker = { param([string]$Name) [regex]::Match($info, "__${Name}__(.*?)(?=__LUNA_|$)", [Text.RegularExpressions.RegexOptions]::Singleline).Groups[1].Value.Trim([char]13, [char]10, [char]0, [char]32) }
-    $unameA = & $readMarker 'UNAME_A'
-    $hostname = & $readMarker 'HOSTNAME'
-    $arch = & $readMarker 'ARCH'
-    $abi = & $readMarker 'ABI'
-    $model = & $readMarker 'MODEL'
-    $device = & $readMarker 'DEVICE'
-    $dt = & $readMarker 'DT'
-    $compatible = & $readMarker 'COMPAT'
+    $info = Invoke-AdbShell 'printf "%s" "__LUNA_UNAME_A__"; uname -a; printf "%s" "__LUNA_HOSTNAME__"; uname -n; printf "%s" "__LUNA_ARCH__"; uname -m; printf "%s" "__LUNA_ABI__"; (getprop ro.product.cpu.abi 2>/dev/null || true); printf "%s" "__LUNA_MODEL__"; (getprop ro.product.model 2>/dev/null || true); printf "%s" "__LUNA_DEVICE__"; (getprop ro.product.device 2>/dev/null || true); printf "%s" "__LUNA_DT__"; (cat /proc/device-tree/model 2>/dev/null || true); printf "%s" "__LUNA_COMPAT__"; (cat /proc/device-tree/compatible 2>/dev/null | tr "\000" "\n" || true)'
+    $unameA = Read-Marker $info 'UNAME_A'
+    $hostname = Read-Marker $info 'HOSTNAME'
+    $arch = Read-Marker $info 'ARCH'
+    $abi = Read-Marker $info 'ABI'
+    $model = Read-Marker $info 'MODEL'
+    $device = Read-Marker $info 'DEVICE'
+    $dt = Read-Marker $info 'DT'
+    $compatible = Read-Marker $info 'COMPAT'
     if ($arch -eq 'arm64-v8a') { $arch = 'aarch64' }
     if ($arch -eq 'armeabi-v7a') { $arch = 'armv7' }
     if (-not $arch -and $abi -eq 'arm64-v8a') { $arch = 'aarch64' }
