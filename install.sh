@@ -42,16 +42,18 @@ adb -s "$SERIAL" get-state | grep -qx device || { echo "ADB station is offline" 
 
 download "$URL/SHA256SUMS" "$TMP/SHA256SUMS"
 download "$URL/manifest.json" "$TMP/manifest.json"
-INFO=$(adb -s "$SERIAL" shell 'printf "__LUNA_HOSTNAME__\n"; uname -n; printf "__LUNA_ARCH__\n"; uname -m; printf "__LUNA_MODEL__\n"; (getprop ro.product.model 2>/dev/null || true); printf "__LUNA_DEVICE__\n"; (getprop ro.product.device 2>/dev/null || true); printf "__LUNA_DT__\n"; (cat /proc/device-tree/model 2>/dev/null || true); printf "__LUNA_COMPAT__\n"; (cat /proc/device-tree/compatible 2>/dev/null | tr "\000" "\n" || true)' | tr -d '\r\000')
+INFO=$(adb -s "$SERIAL" shell 'printf "__LUNA_UNAME_A__\n"; uname -a; printf "__LUNA_HOSTNAME__\n"; uname -n; printf "__LUNA_ARCH__\n"; uname -m; printf "__LUNA_MODEL__\n"; (getprop ro.product.model 2>/dev/null || true); printf "__LUNA_DEVICE__\n"; (getprop ro.product.device 2>/dev/null || true); printf "__LUNA_DT__\n"; (cat /proc/device-tree/model 2>/dev/null || true); printf "__LUNA_COMPAT__\n"; (cat /proc/device-tree/compatible 2>/dev/null | tr "\000" "\n" || true)' | tr -d '\r\000')
 marker_value() { printf '%s\n' "$INFO" | awk -v marker="__$1__" '$0 == marker {getline; print; exit}'; }
 ARCH=$(marker_value LUNA_ARCH)
-CANDIDATES=$(printf '%s\n' "$(marker_value LUNA_HOSTNAME)" "$(marker_value LUNA_MODEL)" "$(marker_value LUNA_DEVICE)" "$(marker_value LUNA_DT)" "$(marker_value LUNA_COMPAT)" | sed '/^$/d')
+CANDIDATES=$(printf '%s\n' "$(marker_value LUNA_UNAME_A)" "$(marker_value LUNA_HOSTNAME)" "$(marker_value LUNA_MODEL)" "$(marker_value LUNA_DEVICE)" "$(marker_value LUNA_DT)" "$(marker_value LUNA_COMPAT)" | sed '/^$/d')
 RECORD=$(python3 - "$TMP/manifest.json" "$ARCH" "$CANDIDATES" <<'PY'
 import json, re, sys
 data=json.load(open(sys.argv[1], encoding="utf-8"))
 arch=sys.argv[2].lower()
 values=[x.strip() for x in sys.argv[3].splitlines() if x.strip()]
-def compact(x): return re.sub(r"[^a-z0-9]","",re.sub(r"[-_][A-Z0-9]{4}$","",x.lower()))
+def compact(x):
+    x = re.sub(r"[A-Z]{4}$", "", x.strip())
+    return re.sub(r"[^a-z0-9]", "", re.sub(r"[-_][a-z0-9]{4}$", "", x.lower()))
 ids=[compact(x) for x in values]
 found=[]
 for entry in data["devices"]:
