@@ -236,7 +236,7 @@ endpoint всё равно остаётся доступной.
 
 | Метод | Endpoint | Действие |
 |---|---|---|
-| `POST` | `/api/led` | Ring и logo, если logo есть |
+| `POST` | `/api/led` | Ring и logo; если ring отсутствует, управляется logo |
 | `POST` | `/api/led/ring` | Только ring |
 | `POST` | `/api/led/logo` | Только logo |
 

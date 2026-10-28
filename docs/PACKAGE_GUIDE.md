@@ -155,10 +155,8 @@ alice.led.set({"#ff0000", "#0000ff"})
 -- Только ring
 alice.led.set.ring({"#00ff00"})
 
--- Только logo, если он есть
-if alice.led.set.logo.is_available() then
-  alice.led.set.logo({"#ffffff"})
-end
+-- Logo есть у станций Luna
+alice.led.set.logo({"#ffffff"})
 
 alice.led.off()
 alice.led.off.ring()
@@ -278,7 +276,7 @@ luna --listen 127.0.0.1:8100 --data-dir /tmp/luna-test
 
 1. `GET /api/device` — проверить модель и `features`.
 2. Проверить `is_available()` перед каждой необязательной capability.
-3. Проверить `device.has_ring/logo` и количество LED.
+3. Проверить `device.has_ring` и количество ring LED; logo является базовой зоной Luna.
 4. Проверить отсутствие железных путей в исходниках пакета.
 5. Запустить пакет на станциях с разной topology LED.
 6. Проверить остановку и повторный запуск пакета.
