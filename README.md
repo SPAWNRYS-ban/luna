@@ -1,66 +1,144 @@
 # Luna
 
-Luna — отдельный host-пакет для Lua, Quasar API, веб-интерфейса, старых `.yap`,
-`plugin.toml` и их модели разрешений. Ядро `yam` не читает, не устанавливает и
-не запускает такие плагины.
+Luna — отдельный runtime для станций Яндекса. Он предоставляет HTTP API,
+Lua runtime, веб-интерфейс и общий слой capabilities, а аппаратная реализация
+каждой станции находится в отдельном crate.
 
-Полная документация HTTP API: [docs/API.md](docs/API.md).
+Полная документация API: [docs/API.md](docs/API.md).
 
-Сборка:
+## Как это устроено
+
+`src/main.rs` — минимальная точка запуска. Шлюз, HTTP API, Lua sandbox,
+permissions и package manager находятся в `src/gateway.rs`.
+
+Каждая поддерживаемая станция имеет собственную папку:
+
+```text
+stations/<device>/
+├── Cargo.toml
+├── station_main.rs
+└── hardware.rs / device.rs / ...
+```
+
+Station crate определяет hardware backend и доступные capabilities. Общий
+gateway не содержит таблиц с аппаратными параметрами конкретных моделей.
+Список бинарников, моделей, targets и release assets находится в
+[`luna-manifest.json`](luna-manifest.json).
+
+## Поддерживаемые станции
+
+| Модель | Бинарник | Target |
+| --- | --- | --- |
+| `yandexmini3` | `luna-yandexmini3` | `aarch64-unknown-linux-musl` |
+| `yandexmini` | `luna-yandexmini` | `armv7-unknown-linux-musleabihf` |
+| `yandexmicro` | `luna-yandexmicro` | `aarch64-unknown-linux-musl` |
+| `yandexmini_2` | `luna-yandexmini_2` | `aarch64-unknown-linux-musl` |
+| `yandexmidi` | `luna-yandexmidi` | `aarch64-unknown-linux-musl` |
+| `yandexplum` | `luna-yandexplum` | `aarch64-unknown-linux-musl` |
+
+Если модель отсутствует в manifest, она считается неподдерживаемой. Для новой
+станции нужно добавить её crate, capabilities и запись в manifest.
+
+## Установка бинарника
+
+Готовые бинарники публикуются в [GitHub Releases](https://github.com/nyakokitsu/luna/releases).
+Выберите asset под архитектуру станции, скопируйте его на станцию и запустите:
+
+```sh
+chmod +x luna-yandexmidi-aarch64-linux-musl
+./luna-yandexmidi-aarch64-linux-musl --listen 0.0.0.0:8099
+```
+
+Проверка запущенного runtime:
+
+```sh
+curl http://<IP Станции>:8099/api/device
+```
+
+По умолчанию Luna слушает `0.0.0.0:8099`. Для локального теста используйте
+`--listen 127.0.0.1:8100`. Порт также можно передать через аргументы запуска.
+
+## Сборка
+
+Обычная сборка host-бинарника:
 
 ```sh
 cargo build --release --locked
 ```
 
-Затем укажите собранный бинарный файл для нужной платформы в `yam.yaml` и
-соберите пакет командой `yam pack` из репозитория YAM.
-
-`src/main.rs` — только шлюз запуска. HTTP API, Lua sandbox, permissions и
-package manager находятся в `src/gateway.rs`. Каждая поддерживаемая колонка —
-отдельный crate в `stations/<model>/` со своим `station_main.rs` и capability
-contract. Так добавляются аппаратные реализации, не разрастается gateway и
-можно проверять колонку отдельной сборкой.
-
-Для станций runtime можно собирать отдельными бинарями с профилем модели. Они
-используют общий gateway, но capability contract и имя бинаря принадлежат
-конкретной колонке:
+Сборка всех station-бинарников и создание `dist/`:
 
 ```sh
-tools/build-stations.sh                 # все модели из luna-manifest.json
-tools/build-stations.sh luna-manifest.json dist yandexmicro
-tools/build.sh                           # интерактивно собрать одну станцию
-
-# собрать все station-бинарники и опубликовать GitHub Release
-tools/release.sh --tag v0.2.1
+tools/build-stations.sh
 ```
 
-Собрать и сразу залить выбранную станцию через ADB:
+Сборка одной станции:
 
 ```sh
-tools/build-deploy.sh --device yandexmidi --serial <adb-serial>
+tools/build-stations.sh luna-manifest.json dist yandexmidi
 ```
 
-`tools/build-deploy.sh` собирает и разворачивает только выбранную станцию.
-Если `--device` или `--serial` не указаны, скрипт предлагает выбрать их
-стрелками. Для публикации полного релиза используется отдельный
-`tools/release.sh`; ему нужен авторизованный GitHub CLI (`gh auth login`).
+Или интерактивный выбор станции:
 
-Скрипт проверяет модель станции, собирает только её target, загружает бинарь,
-делает backup предыдущего, перезапускает Luna и проверяет `/api/device` через
-ADB port-forward. Путь и порт можно изменить через `--root` и `--listen`.
+```sh
+tools/build.sh
+```
 
-`dist/manifest.json` содержит target, asset, модели и SHA-256 каждого бинаря.
-`luna` и `luna-universal` — универсальные бинарники без station-specific
-hardware backend-ов. Они объединяют общие runtime capabilities и подходят для
-проверки API. Для физического управления конкретной колонкой используются
-station-бинарники: `luna-yandexmini`, `luna-yandexmicro`,
-`luna-yandexmini_2`, `luna-yandexmini3`, `luna-yandexmidi` и `luna-yandexplum` запускаются с
-профилем, зашитым в имя бинаря.
+На macOS нужны Rust targets из manifest и соответствующие musl cross-linker-ы:
 
-Если модель отсутствует в `luna-manifest.json`, она считается неподдерживаемой
-и бинарь для неё не собирается. Для добавления поддержки создайте новый
-`stations/<model>/Cargo.toml`, `station_main.rs`, capability contract и запись
-в manifest; после этого сборка и установщик смогут выбрать новый asset.
+```sh
+rustup target add aarch64-unknown-linux-musl
+rustup target add armv7-unknown-linux-musleabihf
+```
 
-`tools/convert_apkg.py` — офлайн-конвертер APKG в `.yap` только для этого
-runtime. Он не создаёт и не устанавливает `.yampkg`.
+Скрипт сборки автоматически использует `aarch64-linux-musl-gcc` и
+`arm-linux-musleabihf-gcc`, если они доступны в `PATH`.
+
+`dist/manifest.json` содержит список собранных assets и SHA-256, а
+`dist/SHA256SUMS` — checksum-файл для проверки загрузки.
+
+## API и capabilities
+
+Основные группы API:
+
+- `/api/device` — модель, архитектура и capabilities станции;
+- `/api/led`, `/api/led/ring`, `/api/led/logo` — управление LED;
+- `/api/clock` — сегментные часы;
+- `/api/input` — устройства ввода, кнопки и распознанные свайпы;
+- `/api/sensors` — доступные датчики;
+- `/api/plugins` и `/api/runtime` — плагины и Lua runtime.
+
+Успешная синхронная операция возвращает `200 OK`. Запуск асинхронной операции
+возвращает `202 Accepted`. Ошибка возвращается с соответствующим HTTP-кодом и
+JSON вида:
+
+```json
+{"error":"описание ошибки"}
+```
+
+Поддержку capability можно проверить через `/api/device` или в Lua через
+`.is_available()`. Для LED также доступны свойства устройства:
+`device.has_ring`, `device.ring_count`, `device.has_logo` и `device.logo_count`.
+
+Примеры всех endpoint-ов находятся в [docs/API.md](docs/API.md).
+
+## Разработка станции
+
+Добавьте новый crate в `stations/<device>/`, реализуйте `station_main.rs` и
+нужные hardware/capability модули, затем добавьте его в workspace и
+`luna-manifest.json`. После этого новая модель будет собираться отдельным
+бинарником и публиковаться как отдельный release asset.
+
+Перед отправкой изменений проверьте workspace:
+
+```sh
+cargo test --workspace --locked
+```
+
+`tools/build-deploy.sh` и `tools/release.sh` используются локально владельцем
+репозитория для deploy и публикации релизов и намеренно не входят в Git.
+
+## Лицензия
+
+Проект находится в разработке. Условия распространения будут добавлены
+отдельно.
