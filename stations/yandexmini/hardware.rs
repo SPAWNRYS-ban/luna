@@ -35,6 +35,12 @@ impl Driver {
     const REG_UPDATE: u8 = 0x25;
     const REG_MODE: u8 = 0x26;
     const REG_FREQ: u8 = 0x4b;
+    #[cfg(all(target_os = "linux", target_env = "musl"))]
+    const I2C_RDWR: libc::c_int = 0x0707;
+    #[cfg(any(
+        not(target_os = "linux"),
+        all(target_os = "linux", not(target_env = "musl"))
+    ))]
     const I2C_RDWR: libc::c_ulong = 0x0707;
 
     fn new() -> Result<Self> {
