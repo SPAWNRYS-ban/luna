@@ -7,12 +7,12 @@ const CHANNEL_COUNT: usize = 18;
 pub fn create_led_backend() -> Result<Box<dyn LedBackend>> {
     let mut paths = Vec::new();
     for index in 1..=6 {
-        for channel in ["red", "green", "blue"] {
+        for (channel_index, channel) in ["red", "green", "blue"].iter().enumerate() {
             let path = PathBuf::from(format!(
                 "/sys/class/leds/mini2:{channel}:ring{index}/brightness"
             ));
             if path.exists() {
-                paths.push(path);
+                paths.push(((index - 1) * 3 + channel_index, path));
             }
         }
     }
@@ -20,7 +20,7 @@ pub fn create_led_backend() -> Result<Box<dyn LedBackend>> {
 }
 
 struct SysfsRing {
-    paths: Vec<PathBuf>,
+    paths: Vec<(usize, PathBuf)>,
 }
 
 impl LedBackend for SysfsRing {
@@ -31,7 +31,8 @@ impl LedBackend for SysfsRing {
         if self.paths.is_empty() {
             bail!("Yandex Mini 2 LED sysfs nodes are unavailable");
         }
-        for (path, value) in self.paths.iter().zip(frame) {
+        for (frame_index, path) in &self.paths {
+            let value = frame[*frame_index];
             fs::write(path, value.to_string())
                 .with_context(|| format!("write {}", path.display()))?;
         }
