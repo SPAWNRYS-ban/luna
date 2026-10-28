@@ -50,6 +50,27 @@ irm https://raw.githubusercontent.com/nyakokitsu/luna/main/install.ps1 -OutFile 
 .\install.ps1 -Serial <serial> -Uninstall
 ```
 
+### Установка через YAM
+
+Если на станции уже установлен YAM и настроен registry, Luna можно поставить
+как обычный пакет. YAM сам выберет опубликованный артефакт под платформу:
+
+```sh
+yam --platform yandexmicro install yam/luna
+```
+
+Для других станций используйте соответствующий platform ID: `yandexmini`,
+`yandexmini_2`, `yandexmini3`, `yandexmidi` или `yandexplum`.
+
+Проверить план установки без изменений:
+
+```sh
+yam --platform yandexmicro plan yam/luna
+```
+
+Standalone-установщик и пакет YAM — два независимых способа установки. Не
+запускайте их одновременно на одном `--data-dir`.
+
 ## Возможности
 
 - отдельный бинарник под каждую поддерживаемую станцию;

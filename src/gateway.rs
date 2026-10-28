@@ -35,7 +35,7 @@ use crate::rooms::Room;
 struct Args {
     #[arg(long, default_value = "127.0.0.1:8099")]
     listen: String,
-    #[arg(long, default_value = "/opt/yam")]
+    #[arg(long, default_value = "/data/quazar/luna/data")]
     data_dir: PathBuf,
     #[arg(long)]
     model: Option<String>,
@@ -498,7 +498,7 @@ fn input_event_info(actions: &[InputAction], event: InputEvent) -> InputEventInf
 #[derive(Debug, Clone, Serialize)]
 struct PluginInfo {
     manifest: Manifest,
-    /// Absolute package directory on the speaker, used by `yam tui`.
+    /// Absolute package directory on the station, used by the package manager.
     directory: PathBuf,
     enabled: bool,
     service_enabled: bool,
@@ -1829,12 +1829,13 @@ fn ipc_endpoint(service: &str) -> Result<SocketAddr> {
     {
         bail!("invalid Quasar IPC service name")
     }
-    let variable = format!("YAM_{}_ADDR", service.to_ascii_uppercase());
-    let address = match std::env::var(&variable) {
+    let luna_variable = format!("LUNA_{}_ADDR", service.to_ascii_uppercase());
+    let legacy_variable = format!("YAM_{}_ADDR", service.to_ascii_uppercase());
+    let address = match std::env::var(&luna_variable).or_else(|_| std::env::var(&legacy_variable)) {
         Ok(address) => address,
         Err(_) => {
             let config = std::fs::read_to_string(QUASAR_CONFIG)
-                .with_context(|| format!("read {QUASAR_CONFIG} or set {variable}"))?;
+                .with_context(|| format!("read {QUASAR_CONFIG} or set {luna_variable}"))?;
             let port = quasar_service_port(&config, service)?
                 .with_context(|| format!("{service}.port is not configured"))?;
             format!("127.0.0.1:{port}")
@@ -3219,6 +3220,10 @@ async fn run_binary(
             .args(invocation_args)
             .current_dir(&root)
             .env("LD_LIBRARY_PATH", binary_library_path(&manifest, &root))
+            .env("LUNA_API_URL", &api_url)
+            .env("LUNA_API_TOKEN", &token)
+            .env("LUNA_PLUGIN_ID", &task_id)
+            // Compatibility for packages built against the original YAM host API.
             .env("YAM_API_URL", api_url)
             .env("YAM_API_TOKEN", token)
             .env("YAM_PLUGIN_ID", task_id)
@@ -3821,9 +3826,10 @@ async fn runtime_permission(
 ) -> Result<(), ApiError> {
     validate_id(id)?;
     let token = headers
-        .get("x-yam-token")
+        .get("x-luna-token")
+        .or_else(|| headers.get("x-yam-token"))
         .and_then(|value| value.to_str().ok())
-        .context("missing X-YAM-Token")?;
+        .context("missing X-Luna-Token")?;
     if app.runtime_tokens.lock().await.get(id).map(String::as_str) != Some(token) {
         return Err(ApiError(anyhow!("invalid runtime token")));
     }
@@ -4295,86 +4301,13 @@ impl IntoResponse for ApiError {
     }
 }
 
-fn shell_quote(value: &std::ffi::OsStr) -> String {
-    format!("'{}'", value.to_string_lossy().replace('\'', "'\\''"))
-}
-
-fn stage_release_update(executable: &Path, data_dir: &Path, listen: &str) -> Result<bool> {
-    const RELEASES: &str = "https://github.com/nyakokitsu/yam/releases/latest/download";
-    let client = reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(60))
-        .build()?;
-    let sums = client
-        .get(format!("{RELEASES}/SHA256SUMS"))
-        .header("User-Agent", "yam-auto-updater")
-        .send()?
-        .error_for_status()?
-        .text()?;
-    let expected = sums
-        .lines()
-        .find_map(|line| {
-            let mut fields = line.split_whitespace();
-            match (fields.next(), fields.next()) {
-                (Some(hash), Some("yamd-aarch64-linux-musl")) => Some(hash),
-                _ => None,
-            }
-        })
-        .context("release SHA256SUMS has no yamd checksum")?;
-    if format!(
-        "{:x}",
-        Sha256::digest(fs::read(executable).unwrap_or_default())
-    ) == expected
-    {
-        return Ok(false);
-    }
-    let binary = client
-        .get(format!("{RELEASES}/yamd-aarch64-linux-musl"))
-        .header("User-Agent", "yam-auto-updater")
-        .send()?
-        .error_for_status()?
-        .bytes()?
-        .to_vec();
-    if format!("{:x}", Sha256::digest(&binary)) != expected {
-        bail!("release checksum mismatch")
-    }
-    let staged = executable.with_extension("yam-update");
-    fs::write(&staged, binary)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&staged, fs::Permissions::from_mode(0o755))?;
-    }
-    let helper = data_dir.join(".yam-restart-update.sh");
-    fs::write(
-        &helper,
-        format!(
-            "#!/bin/sh\nsleep 1\nmv {} {}\nexec {} --listen {} --data-dir {}\n",
-            shell_quote(staged.as_os_str()),
-            shell_quote(executable.as_os_str()),
-            shell_quote(executable.as_os_str()),
-            shell_quote(std::ffi::OsStr::new(listen)),
-            shell_quote(data_dir.as_os_str()),
-        ),
-    )?;
-    Command::new("sh").arg(helper).spawn()?;
-    Ok(true)
-}
-
-/// Binary packages reach the daemon on loopback unless it listens on one address only.
-fn runtime_api_url(listen: &str) -> Result<String> {
-    let mut address: std::net::SocketAddr = listen
-        .parse()
-        .with_context(|| format!("listen address {listen} must be IP:port"))?;
-    if address.ip().is_unspecified() {
-        address.set_ip(match address {
-            std::net::SocketAddr::V4(_) => std::net::Ipv4Addr::LOCALHOST.into(),
-            std::net::SocketAddr::V6(_) => std::net::Ipv6Addr::LOCALHOST.into(),
-        });
-    }
-    Ok(format!("http://{address}"))
-}
-fn start_auto_updater(app: App, executable: PathBuf, listen: String) {
+fn start_auto_updater(
+    app: App,
+    executable: PathBuf,
+    listen: String,
+    model: String,
+    architecture: String,
+) {
     task::spawn(async move {
         tokio::time::sleep(Duration::from_secs(60)).await;
         loop {
@@ -4382,13 +4315,21 @@ fn start_auto_updater(app: App, executable: PathBuf, listen: String) {
                 let executable = executable.clone();
                 let data_dir = app.root.clone();
                 let listen = listen.clone();
+                let model = model.clone();
+                let architecture = architecture.clone();
                 match task::spawn_blocking(move || {
-                    stage_release_update(&executable, &data_dir, &listen)
+                    crate::updater::stage_release_update(
+                        &executable,
+                        &data_dir,
+                        &listen,
+                        &model,
+                        &architecture,
+                    )
                 })
                 .await
                 {
                     Ok(Ok(true)) => {
-                        tracing::info!("release update staged; restarting yamd");
+                        tracing::info!("release update staged; restarting Luna");
                         tokio::time::sleep(Duration::from_millis(500)).await;
                         std::process::exit(0);
                     }
@@ -4512,11 +4453,18 @@ pub async fn run_with_station(station: Option<StationSpec>) -> Result<()> {
             args.data_dir.join("plugins"),
         )?)),
         runtime_tokens: Arc::new(Mutex::new(HashMap::new())),
-        runtime_api_url: runtime_api_url(&args.listen)?,
+        runtime_api_url: crate::updater::runtime_api_url(&args.listen)?,
         input_actions: station.map(|spec| spec.input_actions).unwrap_or(&[]),
         input_gestures: station.map(|spec| spec.input_gestures).unwrap_or(&[]),
     };
-    start_auto_updater(app.clone(), std::env::current_exe()?, args.listen.clone());
+    let updater_device = app.device.lock().await.clone();
+    start_auto_updater(
+        app.clone(),
+        std::env::current_exe()?,
+        args.listen.clone(),
+        updater_device.model,
+        updater_device.architecture,
+    );
     let services = {
         let device = app.device.lock().await.clone();
         app.plugins

@@ -410,7 +410,7 @@ async function sendEndpoint(button) {
   options.headers = {};
   if (path.indexOf('/runtime/') === 0) {
     const token = document.getElementById('runtime-token').value.trim();
-    if (token) options.headers['X-YAM-Token'] = token;
+    if (token) options.headers['X-Luna-Token'] = token;
   }
   if (body) { options.headers['content-type'] = 'application/json'; options.body = body; }
   response.textContent = 'Отправка…';

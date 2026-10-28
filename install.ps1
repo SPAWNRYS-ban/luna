@@ -57,10 +57,19 @@ echo "Luna removed"
     Invoke-WebRequest "$url/manifest.json" -OutFile "$temp/manifest.json" -UseBasicParsing
     Invoke-WebRequest "$url/SHA256SUMS" -OutFile "$temp/SHA256SUMS" -UseBasicParsing
     $manifest = Get-Content "$temp/manifest.json" -Raw | ConvertFrom-Json
-    $info = Invoke-AdbShell 'printf "hostname\t"; uname -n; printf "arch\t"; uname -m; printf "model\t"; getprop ro.product.model; printf "dt\t"; cat /proc/device-tree/model 2>/dev/null || true'
-    $lines = $info -split [Environment]::NewLine | ForEach-Object { $_.Trim([char]13, [char]0) } | Where-Object { $_ }
-    $arch = (($lines | Where-Object { $_ -match '^arch\t(.+)$' } | Select-Object -First 1) -replace '^arch\t', '')
-    $values = @($lines | Where-Object { $_ -match '^(hostname|model|dt)\t(.+)$' } | ForEach-Object { ($_ -split [char]9, 2)[1].Trim() } | Where-Object { $_ })
+    $info = Invoke-AdbShell 'printf "__LUNA_HOSTNAME__"; uname -n; printf "__LUNA_ARCH__"; uname -m; printf "__LUNA_ABI__"; (getprop ro.product.cpu.abi 2>/dev/null || true); printf "__LUNA_MODEL__"; (getprop ro.product.model 2>/dev/null || true); printf "__LUNA_DT__"; (cat /proc/device-tree/model 2>/dev/null || true); printf "__LUNA_COMPAT__"; (cat /proc/device-tree/compatible 2>/dev/null | tr "\000" "\n" || true)'
+    $readMarker = { param([string]$Name) [regex]::Match($info, "__$Name__(.*?)(?=__LUNA_|$)", [Text.RegularExpressions.RegexOptions]::Singleline).Groups[1].Value.Trim([char]13, [char]10, [char]0, [char]32) }
+    $hostname = & $readMarker 'HOSTNAME'
+    $arch = & $readMarker 'ARCH'
+    $abi = & $readMarker 'ABI'
+    $model = & $readMarker 'MODEL'
+    $dt = & $readMarker 'DT'
+    $compatible = & $readMarker 'COMPAT'
+    if ($arch -eq 'arm64-v8a') { $arch = 'aarch64' }
+    if ($arch -eq 'armeabi-v7a') { $arch = 'armv7' }
+    if (-not $arch -and $abi -eq 'arm64-v8a') { $arch = 'aarch64' }
+    if (-not $arch -and $abi -eq 'armeabi-v7a') { $arch = 'armv7' }
+    $values = @($hostname, $model, $dt, $compatible) | Where-Object { $_ }
     $ids = @($values | ForEach-Object { Compact $_ })
     $found = @($manifest.devices | Where-Object {
         $entry = $_
@@ -70,7 +79,7 @@ echo "Luna removed"
         $archMatch = (($entry.target -like 'aarch64-*' -and $arch -in @('aarch64', 'arm64')) -or ($entry.target -like 'armv7-*' -and $arch -in @('armv7', 'armv7l', 'arm')))
         $nameMatch -and $archMatch
     })
-    if ($found.Count -ne 1) { throw "Unsupported or ambiguous station. Detected: $($values -join ', ') ($arch)" }
+    if ($found.Count -ne 1) { throw "Unsupported or ambiguous station. Detected: $($values -join ', ') (arch=$arch, abi=$abi)" }
     $entry = $found[0]
     $asset = $entry.asset
     Write-Host "Detected $($entry.device) ($($entry.codename)) [$arch]"

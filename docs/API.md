@@ -150,8 +150,8 @@ curl -X PUT "$BASE/settings" \
 
 ## User Lua без установки пакета
 
-Пользовательские Lua-файлы можно хранить в `${YAM_VAR}/share/lua/`. По
-умолчанию для station runtime это `/opt/yam/share/lua/`. Файл не нужно
+Пользовательские Lua-файлы можно хранить в `<data-dir>/share/lua/`. По
+умолчанию для standalone Luna это `/data/quazar/luna/data/share/lua/`. Файл не нужно
 упаковывать в `.yap`: Luna запускает его через отдельный user-Lua runner.
 Режим отключён по умолчанию и включается через `lua.enabled = true`.
 
@@ -477,8 +477,10 @@ curl -X POST "$BASE/plugins/example.plugin/invoke" \
 Каждый запрос должен содержать токен:
 
 ```text
-X-YAM-Token: TOKEN
+X-Luna-Token: TOKEN
 ```
+
+`X-YAM-Token` принимается только как совместимость со старыми пакетами.
 
 Доступ дополнительно проверяется permission-ами manifest пакета.
 
