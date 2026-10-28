@@ -3,157 +3,309 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Luna</title>
+  <title>Luna API</title>
   <style>
-    body { max-width: 900px; margin: 3rem auto; font: 16px system-ui; background: #10131a; color: #e8edf7; }
-    button, input, select { padding: .55rem; margin: .2rem; }
-    section { padding: 1rem; margin: 1rem 0; background: #1b2230; border-radius: 8px; }
-    .plugin { display: flex; gap: .5rem; align-items: center; border-top: 1px solid #344; padding: .6rem 0; }
-    .plugin span { flex: 1; }
-    small { color: #aab; }
-    #upload-status { color: #aab; }
-    textarea { width: min(100%, 34rem); min-height: 5rem; box-sizing: border-box; }
-    .row { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; }
-    .status { color: #aab; white-space: pre-wrap; }
+    :root { color-scheme: dark; --bg:#0d1117; --panel:#161d27; --line:#2a3645; --text:#e6edf3; --muted:#8b98a8; --accent:#62a0ff; --ok:#62d394; --bad:#ff7b72; }
+    * { box-sizing:border-box; }
+    body { max-width:1280px; margin:0 auto; padding:28px 18px 60px; font:14px/1.45 system-ui,sans-serif; background:var(--bg); color:var(--text); }
+    h1 { margin:0 0 5px; font-size:30px; } h2 { margin:0 0 14px; font-size:19px; }
+    h3 { margin:22px 0 10px; font-size:15px; color:#b7c5d6; }
+    p { color:var(--muted); } section { margin:16px 0; padding:18px; background:var(--panel); border:1px solid var(--line); border-radius:12px; }
+    button, input, textarea { border:1px solid var(--line); border-radius:7px; background:#0f151d; color:var(--text); padding:8px 10px; font:inherit; }
+    button { cursor:pointer; background:#1e4d85; border-color:#3478c8; } button:hover { background:#2867ad; }
+    button.secondary { background:#202b38; border-color:var(--line); } button.danger { background:#632b32; border-color:#9e414b; }
+    button:disabled { opacity:.5; cursor:not-allowed; } textarea { width:100%; min-height:58px; resize:vertical; font:12px ui-monospace,monospace; }
+    code, .method { color:#9cc4ff; font-family:ui-monospace,monospace; } .hint { color:var(--muted); font-size:12px; }
+    .device-head { display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
+    .device-info { white-space:pre-wrap; color:#b8c7d9; margin:10px 0 0; }
+    .settings-actions { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
+    .endpoint { display:grid; grid-template-columns:minmax(280px,1fr) minmax(260px,1.2fr) minmax(260px,1.4fr) auto; gap:10px; align-items:start; padding:10px 0; border-top:1px solid var(--line); }
+    .endpoint:first-of-type { border-top:0; } .endpoint-title { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .method { font-weight:700; color:#d6a7ff; } .path { width:100%; margin-top:7px; }
+    .body { min-height:68px; } .response { min-height:68px; max-height:220px; overflow:auto; margin:0; padding:9px; background:#0a0f15; border:1px solid var(--line); border-radius:7px; white-space:pre-wrap; word-break:break-word; color:#b7c5d6; }
+    .response.ok { color:var(--ok); } .response.bad { color:var(--bad); }
+    .endpoint button { white-space:nowrap; } .upload-row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+    @media (max-width:900px) { .endpoint { grid-template-columns:1fr; } .endpoint button { width:max-content; } }
   </style>
 </head>
 <body>
-  <h1>Luna</h1>
-  <p id="device"></p>
+  <h1>Luna API</h1>
+  <p>Каждый блок ниже отправляет запрос к endpoint и показывает его ответ.</p>
+
   <section>
-    <h2>Пакеты</h2>
-    <form id="upload"><input id="package-file" type="file" name="package" accept=".yap" required><button>Установить .yap</button><small id="upload-status"></small></form>
-    <div id="plugins"></div>
-  </section>
-  <section>
-    <h2>LED</h2>
-    <p><small>Цвета через запятую. Распределение по реальному числу LED делает Luna.</small></p>
-    <input id="colors" value="#4285F4,#EA4335,#FBBC05" size="40">
-    <div class="row">
-      <button onclick="setLed('/led')">Ring + logo</button>
-      <button onclick="setLed('/led/ring')">Только ring</button>
-      <button id="logo-set" onclick="setLed('/led/logo')">Только logo</button>
-      <button onclick="turnOff('/led/off')">Выключить всё</button>
-      <button onclick="turnOff('/led/off/ring')">Выключить ring</button>
-      <button id="logo-off" onclick="turnOff('/led/off/logo')">Выключить logo</button>
+    <div class="device-head">
+      <div><h2>GET /api/device</h2><div class="hint">Состояние станции и доступные capabilities</div></div>
+      <button onclick="sendDevice()">Обновить device</button>
     </div>
-    <p class="status" id="led-status"></p>
+    <pre id="device-response" class="response">Запрос ещё не выполнялся</pre>
   </section>
+
   <section>
-    <h2>Часы</h2>
-    <div class="row">
-      <label>Время <input id="clock-time" value="12:34" pattern="[0-9]{1,2}:[0-9]{2}"></label>
-      <label>Яркость <input id="clock-brightness" type="number" min="0" max="255" value="170"></label>
-      <button onclick="setClockTime()">Показать время</button>
-      <button onclick="turnOffClock()">Выключить часы</button>
+    <h2>Настройки Luna</h2>
+    <div class="hint">Полный JSON из GET /api/settings. Изменения сохраняются через PUT.</div>
+    <textarea id="settings-body" rows="22" spellcheck="false"></textarea>
+    <div class="settings-actions">
+      <button onclick="loadSettings()">GET /api/settings</button>
+      <button onclick="saveSettings()">PUT /api/settings</button>
     </div>
-    <p><small>Для отдельных сегментов — JSON вида {"A0":255,"B0":255}.</small></p>
-    <textarea id="clock-segments">{"A0":255,"B0":255}</textarea><br>
-    <button onclick="setClockSegments()">Установить сегменты</button>
-    <button onclick="loadClock()">Обновить информацию</button>
-    <p class="status" id="clock-status"></p>
+    <pre id="settings-response" class="response">Настройки ещё не загружены</pre>
   </section>
+
   <section>
-    <h2>Настройки</h2>
-    <label>Профиль <select id="profile"><option>mini2</option><option>micro</option><option>midi</option><option>plum</option><option>sysfs-ring</option><option>custom</option></select></label>
-    <label>LED count <input id="count" type="number" min="1" max="128"></label>
-    <label><input id="binaries" type="checkbox"> Разрешить бинарники плагинов</label>
-    <label><input id="updates" type="checkbox"> Автообновление YAM из GitHub Releases</label>
-    <button onclick="saveSettings()">Сохранить</button>
+    <h2>API endpoints</h2>
+
+    <h3>Device и sensors</h3>
+    <div class="endpoint" data-method="PUT" data-path="/device">
+      <div><div class="endpoint-title"><span class="method">PUT</span><code>/api/device</code></div><input class="path" value="/device"></div>
+      <textarea class="body">{"model":"yandexmini3","architecture":"aarch64","features":[]}</textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="GET" data-path="/sensors">
+      <div><div class="endpoint-title"><span class="method">GET</span><code>/api/sensors</code></div><input class="path" value="/sensors"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+
+    <h3>LED</h3>
+    <div class="endpoint" data-method="POST" data-path="/led">
+      <div><div class="endpoint-title"><span class="method">POST</span><code>/api/led</code></div><input class="path" value="/led"></div>
+      <textarea class="body">{"colors":["#FF0000"]}</textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="POST" data-path="/led/ring">
+      <div><div class="endpoint-title"><span class="method">POST</span><code>/api/led/ring</code></div><input class="path" value="/led/ring"></div>
+      <textarea class="body">{"colors":["#FF0000","#0000FF"]}</textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="POST" data-path="/led/logo">
+      <div><div class="endpoint-title"><span class="method">POST</span><code>/api/led/logo</code></div><input class="path" value="/led/logo"></div>
+      <textarea class="body">{"colors":["#00FF00"]}</textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="POST" data-path="/led/off">
+      <div><div class="endpoint-title"><span class="method">POST</span><code>/api/led/off</code></div><input class="path" value="/led/off"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="POST" data-path="/led/off/ring">
+      <div><div class="endpoint-title"><span class="method">POST</span><code>/api/led/off/ring</code></div><input class="path" value="/led/off/ring"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="POST" data-path="/led/off/logo">
+      <div><div class="endpoint-title"><span class="method">POST</span><code>/api/led/off/logo</code></div><input class="path" value="/led/off/logo"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+
+    <h3>Clock</h3>
+    <div class="endpoint" data-method="GET" data-path="/clock">
+      <div><div class="endpoint-title"><span class="method">GET</span><code>/api/clock</code></div><input class="path" value="/clock"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="POST" data-path="/clock">
+      <div><div class="endpoint-title"><span class="method">POST</span><code>/api/clock</code></div><input class="path" value="/clock"></div>
+      <textarea class="body">{"time":"12:34","brightness":170}</textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="POST" data-path="/clock/off">
+      <div><div class="endpoint-title"><span class="method">POST</span><code>/api/clock/off</code></div><input class="path" value="/clock/off"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+
+    <h3>Input</h3>
+    <div class="endpoint" data-method="GET" data-path="/input/devices">
+      <div><div class="endpoint-title"><span class="method">GET</span><code>/api/input/devices</code></div><input class="path" value="/input/devices"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="GET" data-path="/input/event?timeout_ms=10000">
+      <div><div class="endpoint-title"><span class="method">GET</span><code>/api/input/event</code></div><input class="path" value="/input/event?timeout_ms=10000"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="GET" data-path="/input/events?timeout_ms=10000&amp;idle_ms=300&amp;max_events=128">
+      <div><div class="endpoint-title"><span class="method">GET</span><code>/api/input/events</code></div><input class="path" value="/input/events?timeout_ms=10000&amp;idle_ms=300&amp;max_events=128"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="GET" data-path="/input/volume_up?timeout_ms=60000">
+      <div><div class="endpoint-title"><span class="method">GET</span><code>/api/input/volume_up</code></div><input class="path" value="/input/volume_up?timeout_ms=60000"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="GET" data-path="/input/volume_down?timeout_ms=60000">
+      <div><div class="endpoint-title"><span class="method">GET</span><code>/api/input/volume_down</code></div><input class="path" value="/input/volume_down?timeout_ms=60000"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="GET" data-path="/input/activate?timeout_ms=60000">
+      <div><div class="endpoint-title"><span class="method">GET</span><code>/api/input/activate</code></div><input class="path" value="/input/activate?timeout_ms=60000"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="GET" data-path="/input/mute?timeout_ms=60000">
+      <div><div class="endpoint-title"><span class="method">GET</span><code>/api/input/mute</code></div><input class="path" value="/input/mute?timeout_ms=60000"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="GET" data-path="/input/swipe/minus-to-logo?timeout_ms=60000">
+      <div><div class="endpoint-title"><span class="method">GET</span><code>/api/input/swipe/minus-to-logo</code></div><input class="path" value="/input/swipe/minus-to-logo?timeout_ms=60000"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="GET" data-path="/input/swipe/plus-to-logo?timeout_ms=60000">
+      <div><div class="endpoint-title"><span class="method">GET</span><code>/api/input/swipe/plus-to-logo</code></div><input class="path" value="/input/swipe/plus-to-logo?timeout_ms=60000"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="GET" data-path="/input/swipe/minus-to-plus?timeout_ms=60000">
+      <div><div class="endpoint-title"><span class="method">GET</span><code>/api/input/swipe/minus-to-plus</code></div><input class="path" value="/input/swipe/minus-to-plus?timeout_ms=60000"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="GET" data-path="/input/swipe/plus-to-minus?timeout_ms=60000">
+      <div><div class="endpoint-title"><span class="method">GET</span><code>/api/input/swipe/plus-to-minus</code></div><input class="path" value="/input/swipe/plus-to-minus?timeout_ms=60000"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+
+    <h3>User Lua</h3>
+    <div class="endpoint" data-method="GET" data-path="/lua/files">
+      <div><div class="endpoint-title"><span class="method">GET</span><code>/api/lua/files</code></div><input class="path" value="/lua/files"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="POST" data-path="/lua/run">
+      <div><div class="endpoint-title"><span class="method">POST</span><code>/api/lua/run</code></div><input class="path" value="/lua/run"></div>
+      <textarea class="body">{"file":"hello.lua"}</textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="POST" data-path="/lua/user_lua_<id>/stop">
+      <div><div class="endpoint-title"><span class="method">POST</span><code>/api/lua/:id/stop</code></div><input class="path" value="/lua/user_lua_<id>/stop"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+
+    <h3>Packages</h3>
+    <div class="endpoint" data-method="GET" data-path="/plugins">
+      <div><div class="endpoint-title"><span class="method">GET</span><code>/api/plugins</code></div><input class="path" value="/plugins"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="POST" data-path="/plugins/registry">
+      <div><div class="endpoint-title"><span class="method">POST</span><code>/api/plugins/registry</code></div><input class="path" value="/plugins/registry"></div>
+      <textarea class="body">{"registry":"https://example.org/registry","id":"example.plugin","version":"1.0.0"}</textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="POST" data-path="/plugins/example.plugin/invoke">
+      <div><div class="endpoint-title"><span class="method">POST</span><code>/api/plugins/:id/invoke</code></div><input class="path" value="/plugins/example.plugin/invoke"></div>
+      <textarea class="body">{"args":[]}</textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="POST" data-path="/plugins/example.plugin/stop">
+      <div><div class="endpoint-title"><span class="method">POST</span><code>/api/plugins/:id/stop</code></div><input class="path" value="/plugins/example.plugin/stop"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="DELETE" data-path="/plugins/example.plugin">
+      <div><div class="endpoint-title"><span class="method">DELETE</span><code>/api/plugins/:id</code></div><input class="path" value="/plugins/example.plugin"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="POST" data-path="/plugins/example.plugin/toggle">
+      <div><div class="endpoint-title"><span class="method">POST</span><code>/api/plugins/:id/toggle</code></div><input class="path" value="/plugins/example.plugin/toggle"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="POST" data-path="/plugins/example.plugin/service/enable">
+      <div><div class="endpoint-title"><span class="method">POST</span><code>/api/plugins/:id/service/enable</code></div><input class="path" value="/plugins/example.plugin/service/enable"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="POST" data-path="/plugins/example.plugin/service/disable">
+      <div><div class="endpoint-title"><span class="method">POST</span><code>/api/plugins/:id/service/disable</code></div><input class="path" value="/plugins/example.plugin/service/disable"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="POST" data-path="/plugins/example.plugin/service/start">
+      <div><div class="endpoint-title"><span class="method">POST</span><code>/api/plugins/:id/service/start</code></div><input class="path" value="/plugins/example.plugin/service/start"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="GET" data-path="/plugins/example.plugin/logs">
+      <div><div class="endpoint-title"><span class="method">GET</span><code>/api/plugins/:id/logs</code></div><input class="path" value="/plugins/example.plugin/logs"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+
+    <h3>Runtime API</h3>
+    <div class="hint">Токен будет отправлен как `X-YAM-Token` для всех runtime endpoint-ов.</div>
+    <input id="runtime-token" type="password" placeholder="X-YAM-Token" style="width:min(100%,420px);margin:8px 0 12px">
+    <div class="endpoint" data-method="GET" data-path="/runtime/example.plugin/device">
+      <div><div class="endpoint-title"><span class="method">GET</span><code>/api/runtime/:id/device</code></div><input class="path" value="/runtime/example.plugin/device"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">Требуется X-YAM-Token</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="GET" data-path="/runtime/example.plugin/sensors">
+      <div><div class="endpoint-title"><span class="method">GET</span><code>/api/runtime/:id/sensors</code></div><input class="path" value="/runtime/example.plugin/sensors"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">Требуется X-YAM-Token</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="POST" data-path="/runtime/example.plugin/led">
+      <div><div class="endpoint-title"><span class="method">POST</span><code>/api/runtime/:id/led</code></div><input class="path" value="/runtime/example.plugin/led"></div>
+      <textarea class="body">{"colors":["#FF0000"]}</textarea><pre class="response">Требуется X-YAM-Token</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="POST" data-path="/runtime/example.plugin/clock">
+      <div><div class="endpoint-title"><span class="method">POST</span><code>/api/runtime/:id/clock</code></div><input class="path" value="/runtime/example.plugin/clock"></div>
+      <textarea class="body">{"time":"12:34","brightness":170}</textarea><pre class="response">Требуется X-YAM-Token</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
   </section>
+
+  <section>
+    <h2>Установка .yap</h2>
+    <div class="upload-row"><input id="package-file" type="file" accept=".yap"><button onclick="uploadPackage()">POST /api/plugins</button><span id="upload-response" class="hint">—</span></div>
+  </section>
+
 <script>
 const api = '/api';
-const deviceElement = document.getElementById('device');
-const pluginsElement = document.getElementById('plugins');
-const uploadForm = document.getElementById('upload');
-const packageFile = document.getElementById('package-file');
-const uploadStatus = document.getElementById('upload-status');
-const profileInput = document.getElementById('profile');
-const countInput = document.getElementById('count');
-const binariesInput = document.getElementById('binaries');
-const updatesInput = document.getElementById('updates');
-const colorsInput = document.getElementById('colors');
-const ledStatus = document.getElementById('led-status');
-const clockStatus = document.getElementById('clock-status');
-async function request(path, options) {
-  const response = await fetch(api + path, options);
-  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || response.statusText);
-  return response;
+const deviceResponse = document.getElementById('device-response');
+const settingsBody = document.getElementById('settings-body');
+const settingsResponse = document.getElementById('settings-response');
+
+function pretty(value) {
+  try { return JSON.stringify(JSON.parse(value), null, 2); }
+  catch (_) { return value || '(пустой ответ)'; }
 }
-function escapeHtml(value) {
-  return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+function show(element, status, text) {
+  element.className = 'response ' + (status >= 200 && status < 300 ? 'ok' : 'bad');
+  element.textContent = status + ' ' + (text ? pretty(text) : 'OK');
 }
-function pluginRow(plugin) {
-  const { manifest, enabled, running, compatible, incompatibility } = plugin;
-  const id = escapeHtml(manifest.id);
-  const service = plugin.service_enabled === true;
-  const run = compatible ? (running ? 'Перезапустить' : 'Запустить') : 'Несовместим';
-  const disabled = compatible ? '' : `disabled title="${escapeHtml(incompatibility)}"`;
-  const stop = running ? `<button onclick="action('${id}', 'stop')">Остановить</button>` : '';
-  const launch = service ? `<button ${disabled} onclick="action('${id}', 'service/start')">${run}</button>` : `<button ${disabled} onclick="action('${id}', 'invoke')">Запустить</button>`;
-  return `<div class="plugin"><span><b>${escapeHtml(manifest.name)}</b> <small>${id} · ${escapeHtml(manifest.version)} · ${service ? 'autostart' : 'manual'}<br>${escapeHtml(manifest.description)}</small></span><button onclick="action('${id}', 'toggle')">${enabled ? 'Выключить' : 'Включить'}</button>${launch}${stop}<button onclick="action('${id}', 'delete')">Удалить</button></div>`;
+async function fetchApi(path, options) {
+  const response = await fetch(api + path, options || {});
+  const text = await response.text();
+  return { response: response, text: text };
 }
-async function load() {
+async function sendDevice() {
+  deviceResponse.textContent = 'Загрузка…';
   try {
-    const [pluginData, settings, currentDevice] = await Promise.all([request('/plugins').then(r => r.json()), request('/settings').then(r => r.json()), request('/device').then(r => r.json())]);
-    deviceElement.textContent = `Колонка: ${currentDevice.model} · ${currentDevice.architecture} · ${currentDevice.features.join(', ')}`;
-    const hasLogo = currentDevice.led?.has_logo === true;
-    document.getElementById('logo-set').disabled = !hasLogo;
-    document.getElementById('logo-off').disabled = !hasLogo;
-    pluginsElement.innerHTML = pluginData.map(pluginRow).join('') || 'Пакетов нет';
-    profileInput.value = settings.led.profile;
-    countInput.value = settings.led.count;
-    binariesInput.checked = settings.allow_plugin_binaries;
-    updatesInput.checked = settings.updates?.enabled !== false;
-  } catch (error) { alert(error.message); }
+    const result = await fetchApi('/device');
+    show(deviceResponse, result.response.status, result.text);
+  } catch (error) { show(deviceResponse, 0, error.message); }
 }
-async function action(id, name) {
-  try { await request(`/plugins/${id}${name === 'delete' ? '' : `/${name}`}`, { method: name === 'delete' ? 'DELETE' : 'POST' }); await load(); } catch (error) { alert(error.message); }
-}
-uploadForm.onsubmit = async event => {
-  event.preventDefault();
-  const file = packageFile.files[0];
-  if (!file) return;
-  if (file.size > 67 * 1024 * 1024) return alert('Пакет больше 67 МиБ');
-  uploadStatus.textContent = `Загрузка ${file.name}…`;
-  try { const form = new FormData(); form.append('package', file, file.name); await request('/plugins', { method: 'POST', body: form }); uploadForm.reset(); await load(); uploadStatus.textContent = 'Установлено. Включите пакет перед запуском.'; } catch (error) { uploadStatus.textContent = ''; alert(error.message); }
-};
-function colors() { return colorsInput.value.split(',').map(c => c.trim()).filter(Boolean); }
-async function setLed(path) {
-  try { await request(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ colors: colors() }) }); ledStatus.textContent = `OK: POST ${api}${path}`; }
-  catch (error) { ledStatus.textContent = `Ошибка: ${error.message}`; }
-}
-async function turnOff(path) {
-  try { await request(path, { method: 'POST' }); ledStatus.textContent = `OK: POST ${api}${path}`; }
-  catch (error) { ledStatus.textContent = `Ошибка: ${error.message}`; }
-}
-async function loadClock() {
+async function loadSettings() {
+  settingsResponse.textContent = 'Загрузка…';
   try {
-    const clock = await request('/clock').then(r => r.json());
-    clockStatus.textContent = clock.available ? `Доступны сегменты: ${clock.segments.join(', ')}` : 'Часы недоступны';
-  } catch (error) { clockStatus.textContent = `Ошибка: ${error.message}`; }
-}
-async function setClockTime() {
-  try {
-    await request('/clock', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ time: document.getElementById('clock-time').value, brightness: Number(document.getElementById('clock-brightness').value) }) });
-    clockStatus.textContent = 'Время установлено';
-  } catch (error) { clockStatus.textContent = `Ошибка: ${error.message}`; }
-}
-async function setClockSegments() {
-  try {
-    const segments = JSON.parse(document.getElementById('clock-segments').value);
-    await request('/clock', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ segments }) });
-    clockStatus.textContent = 'Сегменты установлены';
-  } catch (error) { clockStatus.textContent = `Ошибка: ${error.message}`; }
-}
-async function turnOffClock() {
-  try { await request('/clock/off', { method: 'POST' }); clockStatus.textContent = 'Часы выключены'; }
-  catch (error) { clockStatus.textContent = `Ошибка: ${error.message}`; }
+    const result = await fetchApi('/settings');
+    show(settingsResponse, result.response.status, result.text);
+    if (result.response.ok) settingsBody.value = pretty(result.text);
+  } catch (error) { show(settingsResponse, 0, error.message); }
 }
 async function saveSettings() {
-  try { const settings = await request('/settings').then(r => r.json()); settings.led.profile = profileInput.value; settings.led.count = Number(countInput.value); settings.allow_plugin_binaries = binariesInput.checked; settings.updates = { ...(settings.updates || {}), enabled: updatesInput.checked }; await request('/settings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(settings) }); } catch (error) { alert(error.message); }
+  settingsResponse.textContent = 'Сохранение…';
+  try {
+    const body = JSON.stringify(JSON.parse(settingsBody.value));
+    const result = await fetchApi('/settings', { method:'PUT', headers:{'content-type':'application/json'}, body:body });
+    show(settingsResponse, result.response.status, result.text);
+  } catch (error) { show(settingsResponse, 0, error.message); }
 }
-load().then(loadClock);
+async function sendEndpoint(button) {
+  const card = button.closest('.endpoint');
+  const path = card.querySelector('.path').value;
+  const body = card.querySelector('.body').value.trim();
+  const response = card.querySelector('.response');
+  const options = { method:card.dataset.method };
+  options.headers = {};
+  if (path.indexOf('/runtime/') === 0) {
+    const token = document.getElementById('runtime-token').value.trim();
+    if (token) options.headers['X-YAM-Token'] = token;
+  }
+  if (body) { options.headers['content-type'] = 'application/json'; options.body = body; }
+  response.textContent = 'Отправка…';
+  try {
+    const result = await fetchApi(path, options);
+    show(response, result.response.status, result.text);
+  } catch (error) { show(response, 0, error.message); }
+}
+async function uploadPackage() {
+  const file = document.getElementById('package-file').files[0];
+  const output = document.getElementById('upload-response');
+  if (!file) { output.textContent = 'Выберите .yap'; return; }
+  const form = new FormData();
+  form.append('package', file, file.name);
+  output.textContent = 'Загрузка…';
+  try {
+    const result = await fetchApi('/plugins', { method:'POST', body:form });
+    output.textContent = result.response.status + ' ' + pretty(result.text);
+  } catch (error) { output.textContent = 'Ошибка: ' + error.message; }
+}
+sendDevice();
+loadSettings();
 </script>
 </body>
 </html>
