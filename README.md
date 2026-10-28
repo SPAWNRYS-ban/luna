@@ -8,47 +8,6 @@ Luna связывает Lua-плагины и HTTP API с реальным же�
 
 [API reference](docs/API.md) · [Manifest](luna-manifest.json)
 
-## Возможности
-
-- отдельный бинарник под каждую поддерживаемую станцию;
-- общий HTTP API и встроенная веб-панель;
-- Lua runtime для пакетов и пользовательских скриптов;
-- permissions для Lua: LED, input, network, audio, system и другие;
-- LED ring/logo с равномерным распределением цветов;
-- кнопки и распознанные жесты Mini 3;
-- сегментные часы, датчики, громкость и системные capabilities;
-- установка напрямую через ADB, без YAM.
-
-## Архитектура
-
-```text
-HTTP / Web UI
-      │
-      ▼
-src/main.rs → src/gateway.rs → station crate
-                              ├── device.rs
-                              ├── station_main.rs
-                              └── hardware.rs / capabilities
-```
-
-Каждая станция живёт в собственной папке `stations/<device>/`. Общий gateway
-не содержит таблиц аппаратных параметров. Модели, codename, Rust target и
-release asset описаны в [`luna-manifest.json`](luna-manifest.json).
-
-## Поддерживаемые станции
-
-| Модель | Codename | Бинарник | Target |
-| --- | --- | --- | --- |
-| `yandexmini3` | `bergamot` | `luna-yandexmini3` | `aarch64-unknown-linux-musl` |
-| `yandexmini` | `mango` | `luna-yandexmini` | `armv7-unknown-linux-musleabihf` |
-| `yandexmicro` | `yandexmicro` | `luna-yandexmicro` | `aarch64-unknown-linux-musl` |
-| `yandexmini_2` | `yandexmini_2` | `luna-yandexmini_2` | `aarch64-unknown-linux-musl` |
-| `yandexmidi` | `cucumber` | `luna-yandexmidi` | `aarch64-unknown-linux-musl` |
-| `yandexplum` | `plum` | `luna-yandexplum` | `aarch64-unknown-linux-musl` |
-
-Неизвестная модель считается неподдерживаемой. Для добавления станции нужны
-новый crate, hardware/capabilities и запись в manifest.
-
 ## Быстрая установка
 
 Установщики скачивают подходящий asset из GitHub Release, сверяют SHA-256,
@@ -90,6 +49,47 @@ irm https://raw.githubusercontent.com/nyakokitsu/luna/main/install.ps1 -OutFile 
 .\install.ps1 -Version v0.2.0
 .\install.ps1 -Serial <serial> -Uninstall
 ```
+
+## Возможности
+
+- отдельный бинарник под каждую поддерживаемую станцию;
+- общий HTTP API и встроенная веб-панель;
+- Lua runtime для пакетов и пользовательских скриптов;
+- permissions для Lua: LED, input, network, audio, system и другие;
+- LED ring/logo с равномерным распределением цветов;
+- кнопки и распознанные жесты Mini 3;
+- сегментные часы, датчики, громкость и системные capabilities;
+- установка напрямую через ADB, без YAM.
+
+## Архитектура
+
+```text
+HTTP / Web UI
+      │
+      ▼
+src/main.rs → src/gateway.rs → station crate
+                              ├── device.rs
+                              ├── station_main.rs
+                              └── hardware.rs / capabilities
+```
+
+Каждая станция живёт в собственной папке `stations/<device>/`. Общий gateway
+не содержит таблиц аппаратных параметров. Модели, codename, Rust target и
+release asset описаны в [`luna-manifest.json`](luna-manifest.json).
+
+## Поддерживаемые станции
+
+| Модель | Codename | Бинарник | Target |
+| --- | --- | --- | --- |
+| `yandexmini3` | `bergamot` | `luna-yandexmini3` | `aarch64-unknown-linux-musl` |
+| `yandexmini` | `mango` | `luna-yandexmini` | `armv7-unknown-linux-musleabihf` |
+| `yandexmicro` | `yandexmicro` | `luna-yandexmicro` | `aarch64-unknown-linux-musl` |
+| `yandexmini_2` | `yandexmini_2` | `luna-yandexmini_2` | `aarch64-unknown-linux-musl` |
+| `yandexmidi` | `cucumber` | `luna-yandexmidi` | `aarch64-unknown-linux-musl` |
+| `yandexplum` | `plum` | `luna-yandexplum` | `aarch64-unknown-linux-musl` |
+
+Неизвестная модель считается неподдерживаемой. Для добавления станции нужны
+новый crate, hardware/capabilities и запись в manifest.
 
 ## API
 
