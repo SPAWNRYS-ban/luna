@@ -19,6 +19,10 @@
     .device-head { display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
     .device-info { white-space:pre-wrap; color:#b8c7d9; margin:10px 0 0; }
     .settings-actions { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
+    .settings-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:10px 18px; }
+    .setting { display:flex; gap:8px; align-items:center; min-height:34px; }
+    .setting input[type="number"], .setting input[type="text"] { width:100%; }
+    .settings-group { margin:14px 0 0; padding:12px; border:1px solid var(--line); border-radius:8px; }
     .endpoint { display:grid; grid-template-columns:minmax(280px,1fr) minmax(260px,1.2fr) minmax(260px,1.4fr) auto; gap:10px; align-items:start; padding:10px 0; border-top:1px solid var(--line); }
     .endpoint:first-of-type { border-top:0; } .endpoint-title { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     .method { font-weight:700; color:#d6a7ff; } .path { width:100%; margin-top:7px; }
@@ -42,8 +46,52 @@
 
   <section>
     <h2>Настройки Luna</h2>
-    <div class="hint">Полный JSON из GET /api/settings. Изменения сохраняются через PUT.</div>
-    <textarea id="settings-body" rows="22" spellcheck="false"></textarea>
+    <div class="hint">Настройки загружаются через GET и сохраняются через PUT.</div>
+    <div class="settings-group">
+      <h3>Основные</h3>
+      <div class="settings-grid">
+        <label class="setting"><input id="setting-binaries" type="checkbox"> Разрешить бинарники плагинов</label>
+        <label class="setting"><input id="setting-updates" type="checkbox"> Автообновления</label>
+        <label class="setting"><input id="setting-lua-enabled" type="checkbox"> Разрешить user Lua</label>
+        <label class="setting"><input id="setting-lua-infinite" type="checkbox"> Разрешить бесконечные циклы</label>
+        <label class="setting">Lua лимит, секунд <input id="setting-lua-runtime" type="number" min="1" max="86400"></label>
+        <label class="setting">Lua share dir <input id="setting-lua-share" type="text"></label>
+      </div>
+    </div>
+    <div class="settings-group">
+      <h3>LED</h3>
+      <div class="settings-grid">
+        <label class="setting">Профиль <input id="setting-led-profile" type="text"></label>
+        <label class="setting">Количество LED <input id="setting-led-count" type="number" min="1" max="128"></label>
+        <label class="setting">Sysfs root <input id="setting-led-root" type="text"></label>
+      </div>
+    </div>
+    <div class="settings-group">
+      <h3>User Lua permissions</h3>
+      <div class="settings-grid">
+        <label class="setting"><input data-permission="led" type="checkbox"> LED</label>
+        <label class="setting"><input data-permission="volume" type="checkbox"> Громкость</label>
+        <label class="setting"><input data-permission="audio" type="checkbox"> Audio</label>
+        <label class="setting"><input data-permission="microphone" type="checkbox"> Микрофон</label>
+        <label class="setting"><input data-permission="bluetooth" type="checkbox"> Bluetooth</label>
+        <label class="setting"><input data-permission="display" type="checkbox"> Display</label>
+        <label class="setting"><input data-permission="sensors" type="checkbox"> Sensors</label>
+        <label class="setting"><input data-permission="clock" type="checkbox"> Clock</label>
+        <label class="setting"><input data-permission="input" type="checkbox"> Input</label>
+        <label class="setting"><input data-permission="network" type="checkbox"> Network</label>
+        <label class="setting"><input data-permission="ipc_read" type="checkbox"> IPC read</label>
+        <label class="setting"><input data-permission="ipc_control" type="checkbox"> IPC control</label>
+        <label class="setting"><input data-permission="commands" type="checkbox"> Commands</label>
+        <label class="setting"><input data-permission="system" type="checkbox"> System</label>
+        <label class="setting"><input data-permission="exec" type="checkbox"> Exec</label>
+      </div>
+      <div class="settings-grid" style="margin-top:10px">
+        <label>Network allow, через запятую<input id="setting-network-allow" type="text"></label>
+        <label>Input devices, через запятую<input id="setting-input-devices" type="text"></label>
+        <label>IPC services, через запятую<input id="setting-ipc-services" type="text"></label>
+        <label>Command phrases, через запятую<input id="setting-command-phrases" type="text"></label>
+      </div>
+    </div>
     <div class="settings-actions">
       <button onclick="loadSettings()">GET /api/settings</button>
       <button onclick="saveSettings()">PUT /api/settings</button>
@@ -235,8 +283,8 @@
 <script>
 const api = '/api';
 const deviceResponse = document.getElementById('device-response');
-const settingsBody = document.getElementById('settings-body');
 const settingsResponse = document.getElementById('settings-response');
+let settingsState = {};
 
 function pretty(value) {
   try { return JSON.stringify(JSON.parse(value), null, 2); }
@@ -263,15 +311,58 @@ async function loadSettings() {
   try {
     const result = await fetchApi('/settings');
     show(settingsResponse, result.response.status, result.text);
-    if (result.response.ok) settingsBody.value = pretty(result.text);
+    if (result.response.ok) { settingsState = JSON.parse(result.text); fillSettings(settingsState); }
   } catch (error) { show(settingsResponse, 0, error.message); }
+}
+function listValue(value) { return Array.isArray(value) ? value.join(', ') : ''; }
+function splitValue(value) { return value.split(',').map(function (item) { return item.trim(); }).filter(Boolean); }
+function check(id, value) { document.getElementById(id).checked = value === true; }
+function fillSettings(settings) {
+  const lua = settings.lua || {}, permissions = lua.permissions || {}, led = settings.led || {};
+  check('setting-binaries', settings.allow_plugin_binaries === true);
+  check('setting-updates', !settings.updates || settings.updates.enabled !== false);
+  check('setting-lua-enabled', lua.enabled === true);
+  check('setting-lua-infinite', lua.allow_infinite_loops === true);
+  document.getElementById('setting-lua-runtime').value = lua.max_runtime_seconds || 30;
+  document.getElementById('setting-lua-share').value = lua.share_dir || 'share/lua';
+  document.getElementById('setting-led-profile').value = led.profile || '';
+  document.getElementById('setting-led-count').value = led.count || 6;
+  document.getElementById('setting-led-root').value = led.sysfs_root || '/sys/class/leds';
+  document.querySelectorAll('[data-permission]').forEach(function (input) { input.checked = permissions[input.dataset.permission] === true; });
+  document.getElementById('setting-network-allow').value = listValue(lua.network_allow);
+  document.getElementById('setting-input-devices').value = listValue(lua.input_devices);
+  document.getElementById('setting-ipc-services').value = listValue(lua.ipc_services);
+  document.getElementById('setting-command-phrases').value = listValue(lua.command_phrases);
+}
+function readSettings() {
+  const settings = JSON.parse(JSON.stringify(settingsState));
+  settings.led = settings.led || {};
+  settings.updates = settings.updates || {};
+  settings.lua = settings.lua || {};
+  settings.lua.permissions = settings.lua.permissions || {};
+  settings.allow_plugin_binaries = document.getElementById('setting-binaries').checked;
+  settings.updates.enabled = document.getElementById('setting-updates').checked;
+  settings.led.profile = document.getElementById('setting-led-profile').value;
+  settings.led.count = Number(document.getElementById('setting-led-count').value);
+  settings.led.sysfs_root = document.getElementById('setting-led-root').value;
+  settings.lua.enabled = document.getElementById('setting-lua-enabled').checked;
+  settings.lua.allow_infinite_loops = document.getElementById('setting-lua-infinite').checked;
+  settings.lua.max_runtime_seconds = Number(document.getElementById('setting-lua-runtime').value);
+  settings.lua.share_dir = document.getElementById('setting-lua-share').value;
+  document.querySelectorAll('[data-permission]').forEach(function (input) { settings.lua.permissions[input.dataset.permission] = input.checked; });
+  settings.lua.network_allow = splitValue(document.getElementById('setting-network-allow').value);
+  settings.lua.input_devices = splitValue(document.getElementById('setting-input-devices').value);
+  settings.lua.ipc_services = splitValue(document.getElementById('setting-ipc-services').value);
+  settings.lua.command_phrases = splitValue(document.getElementById('setting-command-phrases').value);
+  return settings;
 }
 async function saveSettings() {
   settingsResponse.textContent = 'Сохранение…';
   try {
-    const body = JSON.stringify(JSON.parse(settingsBody.value));
+    const body = JSON.stringify(readSettings());
     const result = await fetchApi('/settings', { method:'PUT', headers:{'content-type':'application/json'}, body:body });
     show(settingsResponse, result.response.status, result.text);
+    if (result.response.ok) settingsState = readSettings();
   } catch (error) { show(settingsResponse, 0, error.message); }
 }
 async function sendEndpoint(button) {
