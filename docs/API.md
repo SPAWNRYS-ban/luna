@@ -283,6 +283,26 @@ curl -X POST "$BASE/volume/mute"
 curl -X POST "$BASE/volume/unmute"
 ```
 
+## Собственные звуки
+
+Публичного HTTP endpoint для проигрывания файлов нет: звук запускается из Lua
+пакета через permission `audio` и передаётся штатному сервису `mediad`.
+
+```toml
+permissions = ["audio"]
+```
+
+```lua
+if alice.audio.is_available() then
+  alice.audio.play("sounds/notification.wav")
+end
+```
+
+Файл должен быть PCM WAV. Luna проверяет RIFF/WAVE-заголовок, число каналов,
+частоту, разрядность, размер до 64 MiB и длительность до 600 секунд. MP3 и
+другие форматы пакет должен заранее преобразовать в WAV. На станциях Quasar
+воспроизведение идёт через `mediad`, без запуска собственного `aplay`.
+
 ### Установка цветов
 
 | Метод | Endpoint | Действие |
