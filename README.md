@@ -1,98 +1,159 @@
 # Luna
 
-Luna — отдельный runtime для станций Яндекса. Он предоставляет HTTP API,
-Lua runtime, веб-интерфейс и общий слой capabilities, а аппаратная реализация
-каждой станции находится в отдельном crate.
+> Универсальный Lua runtime и HTTP-шлюз для станций Яндекса.
 
-Полная документация API: [docs/API.md](docs/API.md).
+Luna связывает Lua-плагины и HTTP API с реальным железом станции. Аппаратная
+логика не зашита в общий gateway: каждая модель собирается отдельным crate и
+сама описывает свои LED, кнопки, часы, аудио и другие capabilities.
 
-## Как это устроено
+[API reference](docs/API.md) · [Manifest](luna-manifest.json)
 
-`src/main.rs` — минимальная точка запуска. Шлюз, HTTP API, Lua sandbox,
-permissions и package manager находятся в `src/gateway.rs`.
+## Возможности
 
-Каждая поддерживаемая станция имеет собственную папку:
+- отдельный бинарник под каждую поддерживаемую станцию;
+- общий HTTP API и встроенная веб-панель;
+- Lua runtime для пакетов и пользовательских скриптов;
+- permissions для Lua: LED, input, network, audio, system и другие;
+- LED ring/logo с равномерным распределением цветов;
+- кнопки и распознанные жесты Mini 3;
+- сегментные часы, датчики, громкость и системные capabilities;
+- установка напрямую через ADB, без YAM.
+
+## Архитектура
 
 ```text
-stations/<device>/
-├── Cargo.toml
-├── station_main.rs
-└── hardware.rs / device.rs / ...
+HTTP / Web UI
+      │
+      ▼
+src/main.rs → src/gateway.rs → station crate
+                              ├── device.rs
+                              ├── station_main.rs
+                              └── hardware.rs / capabilities
 ```
 
-Station crate определяет hardware backend и доступные capabilities. Общий
-gateway не содержит таблиц с аппаратными параметрами конкретных моделей.
-Список бинарников, моделей, targets и release assets находится в
-[`luna-manifest.json`](luna-manifest.json).
+Каждая станция живёт в собственной папке `stations/<device>/`. Общий gateway
+не содержит таблиц аппаратных параметров. Модели, codename, Rust target и
+release asset описаны в [`luna-manifest.json`](luna-manifest.json).
 
 ## Поддерживаемые станции
 
-| Модель | Бинарник | Target |
-| --- | --- | --- |
-| `yandexmini3` | `luna-yandexmini3` | `aarch64-unknown-linux-musl` |
-| `yandexmini` | `luna-yandexmini` | `armv7-unknown-linux-musleabihf` |
-| `yandexmicro` | `luna-yandexmicro` | `aarch64-unknown-linux-musl` |
-| `yandexmini_2` | `luna-yandexmini_2` | `aarch64-unknown-linux-musl` |
-| `yandexmidi` | `luna-yandexmidi` | `aarch64-unknown-linux-musl` |
-| `yandexplum` | `luna-yandexplum` | `aarch64-unknown-linux-musl` |
+| Модель | Codename | Бинарник | Target |
+| --- | --- | --- | --- |
+| `yandexmini3` | `bergamot` | `luna-yandexmini3` | `aarch64-unknown-linux-musl` |
+| `yandexmini` | `mango` | `luna-yandexmini` | `armv7-unknown-linux-musleabihf` |
+| `yandexmicro` | `yandexmicro` | `luna-yandexmicro` | `aarch64-unknown-linux-musl` |
+| `yandexmini_2` | `yandexmini_2` | `luna-yandexmini_2` | `aarch64-unknown-linux-musl` |
+| `yandexmidi` | `cucumber` | `luna-yandexmidi` | `aarch64-unknown-linux-musl` |
+| `yandexplum` | `plum` | `luna-yandexplum` | `aarch64-unknown-linux-musl` |
 
-Если модель отсутствует в manifest, она считается неподдерживаемой. Для новой
-станции нужно добавить её crate, capabilities и запись в manifest.
+Неизвестная модель считается неподдерживаемой. Для добавления станции нужны
+новый crate, hardware/capabilities и запись в manifest.
 
-## Установка без YAM
+## Быстрая установка
 
-На компьютере с установленным Android Platform Tools можно установить Luna
-прямо на подключённую станцию:
+Установщики скачивают подходящий asset из GitHub Release, сверяют SHA-256,
+определяют модель и архитектуру станции, устанавливают Luna в
+`/data/quazar/luna` и создают автозапуск `/etc/init.d/S99luna`.
+
+Требования: Android Platform Tools с `adb`, подключённая станция и включённая
+ADB-отладка.
+
+### macOS / Linux
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/nyakokitsu/luna/main/install.sh | sh
 ```
 
-Установщик сам находит ADB-станцию, определяет модель и архитектуру по
-`uname`, `getprop` и device-tree, выбирает подходящий бинарник из GitHub
-Release, проверяет SHA-256, устанавливает его в `/data/quazar/luna` и создаёт
-автозапуск `/etc/init.d/S99luna`.
-
-Для нескольких подключённых станций можно выбрать устройство вручную или
-передать serial:
+Для конкретной станции или версии:
 
 ```sh
 ADB_SERIAL=<serial> sh install.sh
-```
-
-Версию можно зафиксировать первым аргументом:
-
-```sh
 sh install.sh v0.2.0
 ```
 
-Для Windows есть нативный PowerShell-установщик. Нужны только Android
-Platform Tools (`adb`) и включённая отладка на станции — WSL, Python и YAM не
-требуются:
+При нескольких устройствах установщик предложит интерактивный выбор.
+
+### Windows PowerShell
+
+WSL, Python и YAM не нужны:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
+irm https://raw.githubusercontent.com/nyakokitsu/luna/main/install.ps1 -OutFile install.ps1
 .\install.ps1
-.\install.ps1 -Serial <serial>
-.\install.ps1 -Version v0.2.0
 ```
 
-При нескольких станциях установщик покажет интерактивный выбор. Удаление
-установленной Luna:
+Дополнительные параметры:
 
 ```powershell
+.\install.ps1 -Serial <serial>
+.\install.ps1 -Version v0.2.0
 .\install.ps1 -Serial <serial> -Uninstall
 ```
 
+## API
+
+После установки API доступен на порту `8099`:
+
+```sh
+BASE=http://<IP Станции>:8099/api
+curl "$BASE/device"
+```
+
+Основные группы:
+
+| Группа | Назначение |
+| --- | --- |
+| `/device` | модель, архитектура, topology и capabilities |
+| `/led` | ring/logo, цвета и выключение |
+| `/clock` | сегментные часы |
+| `/input` | input devices, кнопки и жесты |
+| `/settings` | настройки Luna и permissions |
+| `/lua` | пользовательские Lua-файлы |
+| `/plugins` | управление плагинами |
+| `/runtime` | состояние runtime |
+
+Пример LED:
+
+```sh
+curl -X POST "$BASE/led/ring" \
+  -H 'Content-Type: application/json' \
+  -d '{"colors":["#FF0000","#0000FF"]}'
+```
+
+Успешные синхронные операции возвращают `200 OK`. Асинхронные операции
+возвращают `202 Accepted`, ошибки — HTTP-код и JSON:
+
+```json
+{"error":"описание ошибки"}
+```
+
+Возможность конкретной функции сначала проверяйте через capabilities в
+`GET /api/device`. В Lua используйте `.is_available()`; для LED доступны
+`device.has_ring`, `device.ring_count`, `device.has_logo` и
+`device.logo_count`.
+
+Полное описание endpoint-ов и примеры запросов: [docs/API.md](docs/API.md).
+
+## Пользовательский Lua
+
+Скрипты можно хранить в `share/lua` и запускать без установки пакета.
+Функция отключена по умолчанию и включается через `lua.enabled`. Для каждого
+скрипта действуют отдельные permissions и ограничение времени выполнения.
+
+Особенно опасные возможности — бесконечные циклы, сеть, `exec`, IPC и
+команды — выключены по умолчанию. Настройки меняются через
+`PUT /api/settings` или веб-панель.
+
 ## Сборка
 
-Обычная сборка host-бинарника:
+Host-сборка:
 
 ```sh
 cargo build --release --locked
 ```
 
-Сборка всех station-бинарников и создание `dist/`:
+Сборка всех станций:
 
 ```sh
 tools/build-stations.sh
@@ -101,80 +162,34 @@ tools/build-stations.sh
 Сборка одной станции:
 
 ```sh
-tools/build-stations.sh luna-manifest.json dist yandexmidi
+tools/build.sh --device yandexmidi
 ```
 
-Или интерактивный выбор станции:
-
-```sh
-tools/build.sh
-```
-
-На macOS нужны Rust targets из manifest и соответствующие musl cross-linker-ы:
+Или запустите `tools/build.sh` без параметров для выбора стрелками. Для
+кросс-сборки на macOS установите targets:
 
 ```sh
 rustup target add aarch64-unknown-linux-musl
 rustup target add armv7-unknown-linux-musleabihf
 ```
 
-Скрипт сборки автоматически использует `aarch64-linux-musl-gcc` и
-`arm-linux-musleabihf-gcc`, если они доступны в `PATH`.
+Результат появляется в `dist/`: бинарники находятся в `dist/assets/`,
+описание assets — в `dist/manifest.json`, checksums — в
+`dist/SHA256SUMS`.
 
-`dist/manifest.json` содержит список собранных assets и SHA-256, а
-`dist/SHA256SUMS` — checksum-файл для проверки загрузки.
-
-## API и capabilities
-
-Основные группы API:
-
-- `/api/device` — модель, архитектура и capabilities станции;
-- `/api/led`, `/api/led/ring`, `/api/led/logo` — управление LED;
-- `/api/clock` — сегментные часы;
-- `/api/input` — устройства ввода, кнопки и распознанные свайпы;
-- `/api/sensors` — доступные датчики;
-- `/api/plugins` и `/api/runtime` — плагины и Lua runtime.
-
-Успешная синхронная операция возвращает `200 OK`. Запуск асинхронной операции
-возвращает `202 Accepted`. Ошибка возвращается с соответствующим HTTP-кодом и
-JSON вида:
-
-```json
-{"error":"описание ошибки"}
-```
-
-Поддержку capability можно проверить через `/api/device` или в Lua через
-`.is_available()`. Для LED также доступны свойства устройства:
-`device.has_ring`, `device.ring_count`, `device.has_logo` и `device.logo_count`.
-
-Примеры всех endpoint-ов находятся в [docs/API.md](docs/API.md).
-
-## Разработка станции
-
-Добавьте новый crate в `stations/<device>/`, реализуйте `station_main.rs` и
-нужные hardware/capability модули, затем добавьте его в workspace и
-`luna-manifest.json`. После этого новая модель будет собираться отдельным
-бинарником и публиковаться как отдельный release asset.
-
-Перед отправкой изменений проверьте workspace:
+Проверка workspace:
 
 ```sh
 cargo test --workspace --locked
 ```
 
-`tools/build-deploy.sh` и `tools/release.sh` используются локально владельцем
-репозитория для deploy и публикации релизов и намеренно не входят в Git.
-Локальный `tools/release.sh` одним запуском собирает все станции, создаёт
-station-specific `.yampkg`, публикует их в YAM Registry и добавляет бинарники,
-пакеты и checksum-файлы в GitHub Release:
+## Разработка станции
 
-```sh
-tools/release.sh --update
-```
+1. Создайте `stations/<device>/`.
+2. Добавьте `Cargo.toml`, `station_main.rs`, hardware и capability-модули.
+3. Зарегистрируйте crate в workspace.
+4. Добавьте модель, codename, target и asset в `luna-manifest.json`.
+5. Соберите конкретную станцию и проверьте её API.
 
-Для registry скрипт использует `publish.env` и ключ из каталога публикации
-YAM, который можно переопределить через `--yam-publish-dir`.
-
-## Лицензия
-
-Проект находится в разработке. Условия распространения будут добавлены
-отдельно.
+Локальные `tools/release.sh` и `tools/build-deploy.sh` используются для
+публикации и deploy и не входят в Git. Условия лицензии будут добавлены позже.
