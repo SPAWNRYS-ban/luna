@@ -62,7 +62,7 @@ echo "Luna removed"
     Invoke-WebRequest "$url/manifest.json" -OutFile "$temp/manifest.json" -UseBasicParsing
     Invoke-WebRequest "$url/SHA256SUMS" -OutFile "$temp/SHA256SUMS" -UseBasicParsing
     $manifest = Get-Content "$temp/manifest.json" -Raw | ConvertFrom-Json
-    $info = Invoke-AdbShell 'printf "%s" "__LUNA_UNAME_A__"; uname -a; printf "%s" "__LUNA_HOSTNAME__"; uname -n; printf "%s" "__LUNA_ARCH__"; uname -m; printf "%s" "__LUNA_ABI__"; (getprop ro.product.cpu.abi 2>/dev/null || true); printf "%s" "__LUNA_MODEL__"; (getprop ro.product.model 2>/dev/null || true); printf "%s" "__LUNA_DEVICE__"; (getprop ro.product.device 2>/dev/null || true); printf "%s" "__LUNA_DT__"; (cat /proc/device-tree/model 2>/dev/null || true); printf "%s" "__LUNA_COMPAT__"; (cat /proc/device-tree/compatible 2>/dev/null | tr "\000" "\n" || true)'
+    $info = Invoke-AdbShell 'echo "__LUNA_UNAME_A__"; uname -a; echo "__LUNA_HOSTNAME__"; uname -n; echo "__LUNA_ARCH__"; uname -m; echo "__LUNA_ABI__"; (getprop ro.product.cpu.abi 2>/dev/null || true); echo "__LUNA_MODEL__"; (getprop ro.product.model 2>/dev/null || true); echo "__LUNA_DEVICE__"; (getprop ro.product.device 2>/dev/null || true); echo "__LUNA_DT__"; (cat /proc/device-tree/model 2>/dev/null || true); echo "__LUNA_COMPAT__"; (cat /proc/device-tree/compatible 2>/dev/null | tr "\000" "\n" || true)'
     $unameA = Read-Marker $info 'UNAME_A'
     $hostname = Read-Marker $info 'HOSTNAME'
     $arch = Read-Marker $info 'ARCH'
@@ -81,11 +81,23 @@ echo "Luna removed"
     $ids = @($values | ForEach-Object { Compact $_ })
     $found = @($manifest.devices | Where-Object {
         $entry = $_
-        $aliases = @($entry.models) | Where-Object { $_ } | ForEach-Object { Compact $_ }
-        if ($aliases.Count -eq 0) { $aliases = @($entry.device, $entry.codename) | Where-Object { $_ } | ForEach-Object { Compact $_ } }
+        $aliases = @()
+        foreach ($modelAlias in @($entry.models)) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$modelAlias)) { $aliases += Compact ([string]$modelAlias) }
+        }
+        if ($aliases.Count -eq 0) {
+            foreach ($fallbackAlias in @($entry.device, $entry.codename)) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$fallbackAlias)) { $aliases += Compact ([string]$fallbackAlias) }
+            }
+        }
         $nameMatch = $false
-        foreach ($alias in $aliases) { foreach ($id in $ids) { if ($alias -eq $id -or $alias.Contains($id) -or $id.Contains($alias)) { $nameMatch = $true } } }
-        $archMatch = (($entry.target -like 'aarch64-*' -and $arch -in @('aarch64', 'arm64')) -or ($entry.target -like 'armv7-*' -and $arch -in @('armv7', 'armv7l', 'arm')))
+        foreach ($alias in $aliases) {
+            foreach ($id in $ids) {
+                if ($alias -eq $id -or $alias.Contains($id) -or $id.Contains($alias)) { $nameMatch = $true }
+            }
+        }
+        $target = [string]$entry.target
+        $archMatch = (($target.StartsWith('aarch64-') -and $arch -in @('aarch64', 'arm64')) -or ($target.StartsWith('armv7-') -and $arch -in @('armv7', 'armv7l', 'arm')))
         $nameMatch -and $archMatch
     })
     if ($found.Count -ne 1) { throw "Unsupported or ambiguous station. Detected: $($values -join ', ') (arch=$arch, abi=$abi). Raw adb info: $info" }
