@@ -73,7 +73,7 @@ echo "Luna removed"
     if ($arch -eq 'armeabi-v7a') { $arch = 'armv7' }
     if (-not $arch -and $abi -eq 'arm64-v8a') { $arch = 'aarch64' }
     if (-not $arch -and $abi -eq 'armeabi-v7a') { $arch = 'armv7' }
-    if (-not $arch -and $unameA -match '\b(aarch64|armv7l|armv7|arm64)\b') { $arch = $Matches[1] }
+    if ($arch -notin @('aarch64', 'arm64', 'armv7', 'armv7l', 'arm') -and $unameA -match '\b(aarch64|armv7l|armv7|arm64)\b') { $arch = $Matches[1] }
     $arch = $arch.Trim().ToLowerInvariant()
     $values = @($unameA, $hostname, $model, $device, $dt, $compatible) | Where-Object { $_ }
     $ids = @($values | ForEach-Object { Compact $_ })

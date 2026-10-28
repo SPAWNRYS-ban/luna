@@ -50,6 +50,10 @@ MODEL=$(adb_optional 'getprop ro.product.model')
 DEVICE=$(adb_optional 'getprop ro.product.device')
 DT=$(adb_optional 'cat /proc/device-tree/model')
 COMPAT=$(adb_optional 'cat /proc/device-tree/compatible | tr "\000" "\n"')
+case "$ARCH" in
+  aarch64|arm64|armv7|armv7l|arm) ;;
+  *) ARCH=$(printf '%s\n' "$UNAME_A" | sed -nE 's/.*(aarch64|armv7l|armv7|arm64).*/\1/p' | head -n1) ;;
+esac
 CANDIDATES=$(printf '%s\n' "$UNAME_A" "$HOSTNAME" "$MODEL" "$DEVICE" "$DT" "$COMPAT" | sed '/^$/d')
 RECORD=$(python3 - "$TMP/manifest.json" "$CANDIDATES" <<'PY'
 import json, re, sys
