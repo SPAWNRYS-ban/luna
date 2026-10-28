@@ -137,14 +137,15 @@ if alice.input.is_available() then
 end
 ```
 
-`is_available()` проверяет железо. Это не заменяет permission в manifest:
-permission тоже должен быть объявлен.
+`is_available()` используется для capability-модулей без отдельной topology-
+проверки. Для LED достаточно `device.has_ring` и `device.has_logo`. Permission
+в manifest всё равно должен быть объявлен.
 
 ### LED
 
 ```lua
-if alice.led.is_available() then
-  alice.led.set({"#ff0000", "#0000ff"})
+if device.has_logo then
+  alice.led.set.logo({"#ff0000", "#0000ff"})
 end
 
 if device.has_ring then
@@ -155,8 +156,8 @@ if device.has_logo then
   alice.led.set.logo({"#ffffff"})
 end
 
-if alice.led.off.is_available() then
-  alice.led.off()
+if device.has_logo then
+  alice.led.off.logo()
 end
 ```
 

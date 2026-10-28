@@ -544,13 +544,9 @@ device.has_logo
 device.logo_count
 ```
 
-Capability-модули имеют собственную проверку доступности:
+Capability-модули без отдельной topology-проверки имеют `is_available()`:
 
 ```lua
-if alice.led.is_available() then
-  alice.led.set({"#00ff00"})
-end
-
 if device.has_clock then
   alice.clock.time("12:34", 170)
 end
@@ -560,25 +556,24 @@ if alice.input.is_available() then
 end
 ```
 
-Для callable LED API проверка находится прямо на вызываемом объекте:
+Для LED проверяйте конкретную зону через `device`:
 
 ```lua
-if alice.led.set.ring.is_available() then
+if device.has_ring then
   alice.led.set.ring({"#ff0000"})
 end
 
-if alice.led.set.logo.is_available() then
+if device.has_logo then
   alice.led.set.logo({"#0000ff"})
 end
 
-if alice.led.off.ring.is_available() then
+if device.has_ring then
   alice.led.off.ring()
 end
 ```
 
-`is_available()` проверяет аппаратную capability станции. Она не заменяет
-permission из manifest: плагин всё равно должен запросить соответствующее
-разрешение, например `led`, `clock`, `input` или `bluetooth`.
+Проверки `device.has_*` описывают topology станции. Permission из manifest
+остаётся обязательным, например `led`, `clock`, `input` или `bluetooth`.
 
 ## Web UI
 
