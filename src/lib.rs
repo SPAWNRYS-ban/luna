@@ -1,3 +1,4 @@
+mod audio;
 mod gateway;
 pub(crate) mod rooms;
 mod updater;

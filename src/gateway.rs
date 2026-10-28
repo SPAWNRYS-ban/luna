@@ -1292,7 +1292,7 @@ fn detect_device(root: &Path, forced: Option<String>) -> DeviceProfile {
     if command_exists("amixer") {
         features.push("audio.volume.alsa".into())
     }
-    if command_exists("aplay") {
+    if crate::audio::available() {
         features.push("audio.play.aplay".into())
     }
     if command_exists("bluetoothctl") {
@@ -2834,14 +2834,7 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
                     if !path.is_file() {
                         return Err(mlua::Error::external("audio file not found"));
                     };
-                    Command::new("aplay")
-                        .arg("-q")
-                        .arg(path)
-                        .spawn()
-                        .map(|mut child| {
-                            std::thread::spawn(move || child.wait());
-                        })
-                        .map_err(mlua::Error::external)
+                    crate::audio::play(&path).map_err(mlua::Error::external)
                 })?,
             )?;
             api.set("audio", audio)?;
