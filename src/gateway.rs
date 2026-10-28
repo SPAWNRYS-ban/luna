@@ -6,7 +6,7 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use flate2::read::GzDecoder;
 use mlua::{HookTriggers, Lua, LuaOptions, LuaSerdeExt, StdLib, VmState};
 use serde::{Deserialize, Serialize};
@@ -29,6 +29,8 @@ use tower_http::trace::TraceLayer;
 use url::Url;
 use uuid::Uuid;
 
+use crate::rooms::Room;
+
 #[derive(Parser)]
 struct Args {
     #[arg(long, default_value = "127.0.0.1:8099")]
@@ -37,6 +39,18 @@ struct Args {
     data_dir: PathBuf,
     #[arg(long)]
     model: Option<String>,
+    #[command(subcommand)]
+    command: Option<RuntimeCommand>,
+}
+
+#[derive(Subcommand)]
+enum RuntimeCommand {
+    /// Read, set or clear the optional room label without starting the runtime.
+    Room {
+        value: Option<String>,
+        #[arg(long, conflicts_with = "value")]
+        clear: bool,
+    },
 }
 
 /// Hardware LED backend supplied by a station crate.
@@ -399,6 +413,12 @@ struct DeviceProfile {
     source: String,
     #[serde(default)]
     led: LedTopology,
+}
+#[derive(Debug, Serialize)]
+struct DeviceMetadata {
+    #[serde(flatten)]
+    profile: DeviceProfile,
+    room: Option<String>,
 }
 #[derive(Debug, Clone)]
 struct Sensor {
@@ -2368,6 +2388,7 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
     let led = app.led.clone();
     let microphone = app.microphone.clone();
     let clock_backend = app.clock.clone();
+    let room = Room::load(&app.root)?.room;
     let lua_settings = app.settings.lock().await.lua.clone();
     let enforce_user_lua_limits = id.starts_with("user_lua_");
     let lua_cancelled = cancelled.clone();
@@ -3121,6 +3142,7 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
         lua_device.set("ring_count", device.led.ring_count)?;
         lua_device.set("has_logo", device.led.has_logo)?;
         lua_device.set("logo_count", device.led.logo_count)?;
+        lua_device.set("room", room)?;
         lua_device.set("HasRing", device.led.ring_count > 0)?;
         lua_device.set("RingCount", device.led.ring_count)?;
         lua_device.set("HasLogo", device.led.has_logo)?;
@@ -3815,9 +3837,9 @@ async fn runtime_device(
     State(a): State<App>,
     AxumPath(id): AxumPath<String>,
     headers: HeaderMap,
-) -> Result<Json<DeviceProfile>, ApiError> {
+) -> Result<Json<DeviceMetadata>, ApiError> {
     runtime_permission(&a, &id, &headers, "exec").await?;
-    Ok(Json(a.device.lock().await.clone()))
+    Ok(Json(device_metadata(&a).await?))
 }
 async fn runtime_sensors(
     State(a): State<App>,
@@ -3904,8 +3926,22 @@ async fn runtime_clock_off(
 async fn get_settings(State(a): State<App>) -> Json<Settings> {
     Json(a.settings.lock().await.clone())
 }
-async fn get_device(State(a): State<App>) -> Json<DeviceProfile> {
-    Json(a.device.lock().await.clone())
+async fn device_metadata(a: &App) -> Result<DeviceMetadata> {
+    Ok(DeviceMetadata {
+        profile: a.device.lock().await.clone(),
+        room: Room::load(&a.root)?.room,
+    })
+}
+async fn get_device(State(a): State<App>) -> Result<Json<DeviceMetadata>, ApiError> {
+    Ok(Json(device_metadata(&a).await?))
+}
+async fn get_room(State(a): State<App>) -> Result<Json<Room>, ApiError> {
+    Ok(Json(Room::load(&a.root)?))
+}
+async fn put_room(State(a): State<App>, Json(room): Json<Room>) -> Result<Json<Room>, ApiError> {
+    let room = room.normalized()?;
+    room.save(&a.root)?;
+    Ok(Json(room))
 }
 async fn get_sensors() -> Json<Vec<SensorInfo>> {
     Json(
@@ -4374,6 +4410,20 @@ pub fn run() -> Result<()> {
 pub async fn run_with_station(station: Option<StationSpec>) -> Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();
     let args = Args::parse();
+    if let Some(RuntimeCommand::Room { value, clear }) = args.command {
+        let mutating = clear || value.is_some();
+        let room = if mutating {
+            fs::create_dir_all(&args.data_dir)?;
+            Room { room: value }.normalized()?
+        } else {
+            Room::load(&args.data_dir)?
+        };
+        if mutating {
+            room.save(&args.data_dir)?;
+        }
+        println!("{}", room.room.unwrap_or_default());
+        return Ok(());
+    }
     fs::create_dir_all(&args.data_dir)?;
     let settings_path = args.data_dir.join("settings.toml");
     // A broken settings.toml must not silently fall back to defaults: they
@@ -4522,6 +4572,7 @@ pub async fn run_with_station(station: Option<StationSpec>) -> Result<()> {
             .route("/api/runtime/:id/clock/off", post(runtime_clock_off))
             .route("/api/settings", get(get_settings).put(put_settings))
             .route("/api/device", get(get_device).put(put_device))
+            .route("/api/room", get(get_room).put(put_room))
             .route("/api/sensors", get(get_sensors))
             .route("/api/input/devices", get(get_input_devices))
             .route("/api/input/event", get(get_input_event))

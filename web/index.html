@@ -45,6 +45,17 @@
   </section>
 
   <section>
+    <h2>Комната</h2>
+    <div class="hint">Локальная метка станции. Пустое поле удаляет её.</div>
+    <div class="upload-row" style="margin-top:10px">
+      <input id="room-input" type="text" maxlength="64" placeholder="Например, Кухня">
+      <button onclick="saveRoom()">Сохранить комнату</button>
+      <button class="secondary" onclick="loadRoom()">Обновить</button>
+    </div>
+    <pre id="room-response" class="response">Комната ещё не загружена</pre>
+  </section>
+
+  <section>
     <h2>Настройки Luna</h2>
     <div class="hint">Настройки загружаются через GET и сохраняются через PUT.</div>
     <div class="settings-group">
@@ -103,6 +114,14 @@
     <h2>API endpoints</h2>
 
     <h3>Device и sensors</h3>
+    <div class="endpoint" data-method="GET" data-path="/room">
+      <div><div class="endpoint-title"><span class="method">GET</span><code>/api/room</code></div><input class="path" value="/room"></div>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="PUT" data-path="/room">
+      <div><div class="endpoint-title"><span class="method">PUT</span><code>/api/room</code></div><input class="path" value="/room"></div>
+      <textarea class="body">{"room":"Кухня"}</textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
     <div class="endpoint" data-method="PUT" data-path="/device">
       <div><div class="endpoint-title"><span class="method">PUT</span><code>/api/device</code></div><input class="path" value="/device"></div>
       <textarea class="body">{"model":"yandexmini3","architecture":"aarch64","features":[]}</textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
@@ -283,6 +302,8 @@
 <script>
 const api = '/api';
 const deviceResponse = document.getElementById('device-response');
+const roomResponse = document.getElementById('room-response');
+const roomInput = document.getElementById('room-input');
 const settingsResponse = document.getElementById('settings-response');
 let settingsState = {};
 
@@ -305,6 +326,21 @@ async function sendDevice() {
     const result = await fetchApi('/device');
     show(deviceResponse, result.response.status, result.text);
   } catch (error) { show(deviceResponse, 0, error.message); }
+}
+async function loadRoom() {
+  roomResponse.textContent = 'Загрузка…';
+  try {
+    const result = await fetchApi('/room');
+    show(roomResponse, result.response.status, result.text);
+    if (result.response.ok) roomInput.value = (JSON.parse(result.text).room || '');
+  } catch (error) { show(roomResponse, 0, error.message); }
+}
+async function saveRoom() {
+  roomResponse.textContent = 'Сохранение…';
+  try {
+    const result = await fetchApi('/room', { method:'PUT', headers:{'content-type':'application/json'}, body:JSON.stringify({room:roomInput.value}) });
+    show(roomResponse, result.response.status, result.text);
+  } catch (error) { show(roomResponse, 0, error.message); }
 }
 async function loadSettings() {
   settingsResponse.textContent = 'Загрузка…';
@@ -396,6 +432,7 @@ async function uploadPackage() {
   } catch (error) { output.textContent = 'Ошибка: ' + error.message; }
 }
 sendDevice();
+loadRoom();
 loadSettings();
 </script>
 </body>

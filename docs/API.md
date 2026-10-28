@@ -51,6 +51,29 @@ curl "$BASE/device"
 }
 ```
 
+### `GET /api/room`
+
+Возвращает локальную пользовательскую метку станции. Если метка не задана,
+возвращается `null`.
+
+```sh
+curl "$BASE/room"
+```
+
+### `PUT /api/room`
+
+Сохраняет метку в `room.toml` внутри `--data-dir` Luna. Пустая строка или
+`null` удаляют её; допустимо до 64 Unicode-символов без управляющих символов.
+
+```sh
+curl -X PUT "$BASE/room" \
+  -H 'Content-Type: application/json' \
+  -d '{"room":"Кухня"}'
+```
+
+Ответ имеет вид `{"room":"Кухня"}` или `{"room":null}`. Значение также
+появляется в `GET /api/device` и доступно Lua как `device.room`.
+
 ### `PUT /api/device`
 
 Сохраняет override профиля устройства в `device.toml`.

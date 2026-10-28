@@ -59,6 +59,7 @@ irm https://raw.githubusercontent.com/nyakokitsu/luna/main/install.ps1 -OutFile 
 - LED ring/logo с равномерным распределением цветов;
 - кнопки и распознанные жесты Mini 3;
 - сегментные часы, датчики, громкость и системные capabilities;
+- локальная метка комнаты для API, веб-панели и Lua;
 - установка напрямую через ADB, без YAM.
 
 ## Архитектура
@@ -134,6 +135,10 @@ curl -X POST "$BASE/led/ring" \
 `device.logo_count`.
 
 Полное описание endpoint-ов и примеры запросов: [docs/API.md](docs/API.md).
+
+Локальную комнату станции можно задать через `PUT /api/room` или командой
+`luna --data-dir <data-dir> room "Кухня"`. Она хранится отдельно от профиля
+устройства и доступна в Lua как `device.room`.
 
 ## Пользовательский Lua
 
