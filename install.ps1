@@ -15,14 +15,13 @@ function Invoke-AdbShell([string]$Command) {
     if ($LASTEXITCODE -ne 0) { throw "adb shell failed: $result" }
     return ($result -join [Environment]::NewLine)
 }
+function Invoke-AdbOptional([string]$Command) {
+    try { return Invoke-AdbShell $Command } catch { return "" }
+}
 function Compact([string]$Value) {
     if ([string]::IsNullOrWhiteSpace($Value)) { return "" }
     $value = $Value.Trim() -replace '[A-Z]{4}$', ''
     return (($value.ToLowerInvariant() -replace '[-_][a-z0-9]{4}$', '') -replace '[^a-z0-9]', '')
-}
-function Read-Marker([string]$Text, [string]$Name) {
-    $match = [regex]::Match($Text, "(?ms)^LUNA_${Name}\r?\n(.*?)(?=\r?\nLUNA_|$)")
-    return $match.Groups[1].Value.Trim([char]13, [char]10, [char]0, [char]32)
 }
 Require-Command "adb"
 if ($RemoteRoot -notmatch '^[A-Za-z0-9_./-]+$') { throw "Invalid remote root" }
@@ -62,15 +61,14 @@ echo "Luna removed"
     Invoke-WebRequest "$url/manifest.json" -OutFile "$temp/manifest.json" -UseBasicParsing
     Invoke-WebRequest "$url/SHA256SUMS" -OutFile "$temp/SHA256SUMS" -UseBasicParsing
     $manifest = Get-Content "$temp/manifest.json" -Raw | ConvertFrom-Json
-    $info = Invoke-AdbShell 'echo LUNA_UNAME_A; uname -a; echo LUNA_HOSTNAME; uname -n; echo LUNA_ARCH; uname -m; echo LUNA_ABI; (getprop ro.product.cpu.abi 2>/dev/null || true); echo LUNA_MODEL; (getprop ro.product.model 2>/dev/null || true); echo LUNA_DEVICE; (getprop ro.product.device 2>/dev/null || true); echo LUNA_DT; (cat /proc/device-tree/model 2>/dev/null || true); echo LUNA_COMPAT; (cat /proc/device-tree/compatible 2>/dev/null | tr "\000" "\n" || true)'
-    $unameA = Read-Marker $info 'UNAME_A'
-    $hostname = Read-Marker $info 'HOSTNAME'
-    $arch = Read-Marker $info 'ARCH'
-    $abi = Read-Marker $info 'ABI'
-    $model = Read-Marker $info 'MODEL'
-    $device = Read-Marker $info 'DEVICE'
-    $dt = Read-Marker $info 'DT'
-    $compatible = Read-Marker $info 'COMPAT'
+    $unameA = Invoke-AdbOptional 'uname -a'
+    $hostname = Invoke-AdbOptional 'uname -n'
+    $arch = Invoke-AdbOptional 'uname -m'
+    $abi = Invoke-AdbOptional 'getprop ro.product.cpu.abi 2>/dev/null || true'
+    $model = Invoke-AdbOptional 'getprop ro.product.model 2>/dev/null || true'
+    $device = Invoke-AdbOptional 'getprop ro.product.device 2>/dev/null || true'
+    $dt = Invoke-AdbOptional 'cat /proc/device-tree/model 2>/dev/null || true'
+    $compatible = Invoke-AdbOptional 'cat /proc/device-tree/compatible 2>/dev/null | tr "\000" "\n" || true'
     if ($arch -eq 'arm64-v8a') { $arch = 'aarch64' }
     if ($arch -eq 'armeabi-v7a') { $arch = 'armv7' }
     if (-not $arch -and $abi -eq 'arm64-v8a') { $arch = 'aarch64' }
@@ -98,7 +96,7 @@ echo "Luna removed"
         }
         $nameMatch
     })
-    if ($found.Count -ne 1) { throw "Unsupported or ambiguous station. Detected: $($values -join ', ') (arch=$arch, abi=$abi). Raw adb info: $info" }
+    if ($found.Count -ne 1) { throw "Unsupported or ambiguous station. Detected: $($values -join ', ') (arch=$arch, abi=$abi)" }
     $entry = $found[0]
     $asset = $entry.asset
     Write-Host "Detected $($entry.device) ($($entry.codename)) [$arch]"

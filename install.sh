@@ -42,10 +42,15 @@ adb -s "$SERIAL" get-state | grep -qx device || { echo "ADB station is offline" 
 
 download "$URL/SHA256SUMS" "$TMP/SHA256SUMS"
 download "$URL/manifest.json" "$TMP/manifest.json"
-INFO=$(adb -s "$SERIAL" shell 'echo LUNA_UNAME_A; uname -a; echo LUNA_HOSTNAME; uname -n; echo LUNA_ARCH; uname -m; echo LUNA_MODEL; (getprop ro.product.model 2>/dev/null || true); echo LUNA_DEVICE; (getprop ro.product.device 2>/dev/null || true); echo LUNA_DT; (cat /proc/device-tree/model 2>/dev/null || true); echo LUNA_COMPAT; (cat /proc/device-tree/compatible 2>/dev/null | tr "\000" "\n" || true)' | tr -d '\r\000')
-marker_value() { printf '%s\n' "$INFO" | awk -v marker="$1" '$0 == marker {getline; print; exit}'; }
-ARCH=$(marker_value LUNA_ARCH)
-CANDIDATES=$(printf '%s\n' "$(marker_value LUNA_UNAME_A)" "$(marker_value LUNA_HOSTNAME)" "$(marker_value LUNA_MODEL)" "$(marker_value LUNA_DEVICE)" "$(marker_value LUNA_DT)" "$(marker_value LUNA_COMPAT)" | sed '/^$/d')
+adb_optional() { adb -s "$SERIAL" shell "$1" 2>/dev/null || true; }
+UNAME_A=$(adb_optional 'uname -a')
+HOSTNAME=$(adb_optional 'uname -n')
+ARCH=$(adb_optional 'uname -m')
+MODEL=$(adb_optional 'getprop ro.product.model')
+DEVICE=$(adb_optional 'getprop ro.product.device')
+DT=$(adb_optional 'cat /proc/device-tree/model')
+COMPAT=$(adb_optional 'cat /proc/device-tree/compatible | tr "\000" "\n"')
+CANDIDATES=$(printf '%s\n' "$UNAME_A" "$HOSTNAME" "$MODEL" "$DEVICE" "$DT" "$COMPAT" | sed '/^$/d')
 RECORD=$(python3 - "$TMP/manifest.json" "$CANDIDATES" <<'PY'
 import json, re, sys
 data=json.load(open(sys.argv[1], encoding="utf-8"))
@@ -64,7 +69,7 @@ if len(found) != 1: raise SystemExit("model was not matched uniquely")
 e=found[0]
 print("\t".join((e["device"],e["asset"],e.get("codename",""))))
 PY
-) || { echo "Unsupported or ambiguous station:" >&2; printf '%s\n' "$INFO" >&2; exit 7; }
+  ) || { echo "Unsupported or ambiguous station: $HOSTNAME ($ARCH)" >&2; exit 7; }
 IFS="$(printf '\t')" read -r DEVICE ASSET CODENAME <<EOF
 $RECORD
 EOF
