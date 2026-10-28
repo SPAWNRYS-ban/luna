@@ -81,10 +81,11 @@ echo "Luna removed"
     if (-not $arch -and $abi -eq 'armeabi-v7a') { $arch = 'armv7' }
     if ($arch -notin @('aarch64', 'arm64', 'armv7', 'armv7l', 'arm') -and $unameA -match '\b(aarch64|armv7l|armv7|arm64)\b') { $arch = $Matches[1] }
     $arch = $arch.Trim().ToLowerInvariant()
-    $values = @($unameA, $hostname, $model, $device, $dt, $compatible) | Where-Object { $_ }
+    $values = @($unameA, $hostname, $model, $device, $dt, $compatible) |
+        Where-Object { $_ -and $_ -notmatch '^-sh: .*not found' }
     $ids = @($values | ForEach-Object { Compact $_ })
-    $found = @($manifest.devices | Where-Object {
-        $entry = $_
+    $found = @()
+    foreach ($entry in @($manifest.devices)) {
         $aliases = @()
         foreach ($modelAlias in @($entry.models)) {
             if (-not [string]::IsNullOrWhiteSpace([string]$modelAlias)) { $aliases += Compact ([string]$modelAlias) }
@@ -100,8 +101,8 @@ echo "Luna removed"
                 if ($alias -eq $id -or $alias.Contains($id) -or $id.Contains($alias)) { $nameMatch = $true }
             }
         }
-        $nameMatch
-    })
+        if ($nameMatch) { $found += $entry }
+    }
     if ($found.Count -ne 1) { throw "Unsupported or ambiguous station. Detected: $($values -join ', ') (arch=$arch, abi=$abi)" }
     $entry = $found[0]
     $asset = $entry.asset
