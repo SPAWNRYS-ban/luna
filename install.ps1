@@ -58,7 +58,7 @@ echo "Luna removed"
     Invoke-WebRequest "$url/SHA256SUMS" -OutFile "$temp/SHA256SUMS" -UseBasicParsing
     $manifest = Get-Content "$temp/manifest.json" -Raw | ConvertFrom-Json
     $info = Invoke-AdbShell 'printf "__LUNA_HOSTNAME__"; uname -n; printf "__LUNA_ARCH__"; uname -m; printf "__LUNA_ABI__"; (getprop ro.product.cpu.abi 2>/dev/null || true); printf "__LUNA_MODEL__"; (getprop ro.product.model 2>/dev/null || true); printf "__LUNA_DT__"; (cat /proc/device-tree/model 2>/dev/null || true); printf "__LUNA_COMPAT__"; (cat /proc/device-tree/compatible 2>/dev/null | tr "\000" "\n" || true)'
-    $readMarker = { param([string]$Name) [regex]::Match($info, "__$Name__(.*?)(?=__LUNA_|$)", [Text.RegularExpressions.RegexOptions]::Singleline).Groups[1].Value.Trim([char]13, [char]10, [char]0, [char]32) }
+    $readMarker = { param([string]$Name) [regex]::Match($info, "__${Name}__(.*?)(?=__LUNA_|$)", [Text.RegularExpressions.RegexOptions]::Singleline).Groups[1].Value.Trim([char]13, [char]10, [char]0, [char]32) }
     $hostname = & $readMarker 'HOSTNAME'
     $arch = & $readMarker 'ARCH'
     $abi = & $readMarker 'ABI'
