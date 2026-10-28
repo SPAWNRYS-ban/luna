@@ -96,9 +96,7 @@ echo "Luna removed"
                 if ($alias -eq $id -or $alias.Contains($id) -or $id.Contains($alias)) { $nameMatch = $true }
             }
         }
-        $target = [string]$entry.target
-        $archMatch = (($target.StartsWith('aarch64-') -and $arch -in @('aarch64', 'arm64')) -or ($target.StartsWith('armv7-') -and $arch -in @('armv7', 'armv7l', 'arm')))
-        $nameMatch -and $archMatch
+        $nameMatch
     })
     if ($found.Count -ne 1) { throw "Unsupported or ambiguous station. Detected: $($values -join ', ') (arch=$arch, abi=$abi). Raw adb info: $info" }
     $entry = $found[0]

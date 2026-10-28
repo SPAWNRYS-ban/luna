@@ -46,11 +46,10 @@ INFO=$(adb -s "$SERIAL" shell 'printf "__LUNA_UNAME_A__\n"; uname -a; printf "__
 marker_value() { printf '%s\n' "$INFO" | awk -v marker="__$1__" '$0 == marker {getline; print; exit}'; }
 ARCH=$(marker_value LUNA_ARCH)
 CANDIDATES=$(printf '%s\n' "$(marker_value LUNA_UNAME_A)" "$(marker_value LUNA_HOSTNAME)" "$(marker_value LUNA_MODEL)" "$(marker_value LUNA_DEVICE)" "$(marker_value LUNA_DT)" "$(marker_value LUNA_COMPAT)" | sed '/^$/d')
-RECORD=$(python3 - "$TMP/manifest.json" "$ARCH" "$CANDIDATES" <<'PY'
+RECORD=$(python3 - "$TMP/manifest.json" "$CANDIDATES" <<'PY'
 import json, re, sys
 data=json.load(open(sys.argv[1], encoding="utf-8"))
-arch=sys.argv[2].lower()
-values=[x.strip() for x in sys.argv[3].splitlines() if x.strip()]
+values=[x.strip() for x in sys.argv[2].splitlines() if x.strip()]
 def compact(x):
     x = re.sub(r"[A-Z]{4}$", "", x.strip())
     return re.sub(r"[^a-z0-9]", "", re.sub(r"[-_][a-z0-9]{4}$", "", x.lower()))
@@ -60,9 +59,6 @@ for entry in data["devices"]:
     aliases=entry.get("models",[]) or [entry["device"],entry.get("codename","")]
     aliases=[compact(x) for x in aliases if x]
     if not any(a == c or a in c or c in a for a in aliases for c in ids): continue
-    target=entry["target"]
-    if "aarch64" in target and arch not in ("aarch64","arm64"): continue
-    if "armv7" in target and arch not in ("armv7","armv7l","arm"): continue
     found.append(entry)
 if len(found) != 1: raise SystemExit("model was not matched uniquely")
 e=found[0]
