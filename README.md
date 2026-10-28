@@ -26,6 +26,20 @@ station crate → конкретное железо станции
 
 ## Установка
 
+### Через YAM
+
+Рекомендуемый способ, если Yam уже установлен на станции:
+
+```sh
+yam --platform yandexmini3 install yam/luna
+```
+
+YAM выбирает пакет под платформу станции. Для других устройств используйте
+соответствующий platform ID из [`luna-manifest.json`](luna-manifest.json).
+
+Standalone-установщик и установка через YAM — альтернативные способы; не
+используйте их одновременно с одним и тем же `data-dir`.
+
 ### macOS / Linux
 
 Нужны `adb`, подключённая станция и включённая ADB-отладка:
@@ -56,16 +70,6 @@ irm https://raw.githubusercontent.com/nyakokitsu/luna/main/install.ps1 -OutFile 
 ```powershell
 .\install.ps1 -Uninstall
 ```
-
-### Через YAM
-
-```sh
-yam --platform yandexmini3 install yam/luna
-```
-
-YAM выбирает пакет под платформу станции. Standalone-установщик и установка
-через YAM — альтернативные способы; не используйте их одновременно с одним
-и тем же `data-dir`.
 
 ## Что даёт Luna пакету
 
