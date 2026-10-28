@@ -41,6 +41,16 @@ const INPUT_ACTIONS: &[InputAction] = &[
 
 const INPUT_GESTURES: &[InputGesture] = &[
     InputGesture {
+        name: "minus-to-logo",
+        actions: &["volume_down", "activate"],
+        max_gap_ms: 300,
+    },
+    InputGesture {
+        name: "plus-to-logo",
+        actions: &["volume_up", "activate"],
+        max_gap_ms: 300,
+    },
+    InputGesture {
         name: "minus-to-plus",
         actions: &["volume_down", "activate", "volume_up"],
         max_gap_ms: 300,

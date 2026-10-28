@@ -227,8 +227,14 @@ curl '$BASE/input/volume_up?timeout_ms=60000'
 
 | Endpoint | Последовательность |
 |---|---|
+| `GET /api/input/swipe/minus-to-logo` | `volume_down → activate` |
+| `GET /api/input/swipe/plus-to-logo` | `volume_up → activate` |
 | `GET /api/input/swipe/minus-to-plus` | `volume_down → activate → volume_up` |
 | `GET /api/input/swipe/plus-to-minus` | `volume_up → activate → volume_down` |
+
+Частичные жесты до центральной зоны logo распознаются отдельно: станция может
+завершить действие уже на последовательности `кнопка → logo`, не дожидаясь
+противоположной кнопки. Полные свайпы остаются отдельными endpoint-ами.
 
 ```sh
 curl '$BASE/input/swipe/minus-to-plus?timeout_ms=60000'
