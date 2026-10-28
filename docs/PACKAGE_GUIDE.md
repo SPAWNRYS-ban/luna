@@ -117,12 +117,17 @@ device.ring_count
 device.has_logo
 device.logo_count
 device.has_clock
+device.has_mute_button
 device.features
 device.room
 ```
 
 Есть и совместимые PascalCase-имена: `device.HasRing`, `device.RingCount`,
-`device.HasLogo`, `device.LogoCount`, `device.HasClock`.
+`device.HasLogo`, `device.LogoCount`, `device.HasClock`,
+`device.HasMuteButton`, `device.HasMicrophone`.
+
+Наличие штатного микрофонного тракта проверяется через `device.has_microphone`.
+На станциях без запущенного `maind` значение будет `false`.
 
 Проверка `is_available()` нужна всегда, если capability может отсутствовать на
 части станций:
@@ -186,10 +191,12 @@ if alice.audio.is_available() then
 end
 ```
 
-Luna использует штатный ALSA `aplay` станции и сама подставляет нужные пути к
-бинарю и библиотекам. Поддерживаются PCM WAV: mono/stereo, 8/16/24/32-bit,
-частота 8–192 kHz, размер до 64 MiB и длительность до 600 секунд. MP3, Opus и
-другие контейнеры пакет должен заранее преобразовать в WAV.
+На станциях Quasar Luna передаёт воспроизведение штатному сервису `mediad` — тому
+же маршруту, которым пользуется система. Пакет не запускает собственный
+`aplay`, не подменяет ALSA-библиотеки станции и не забирает аудиоустройство у
+системы. Сейчас входной файл должен быть стерео PCM WAV: signed 16-bit,
+48000 Hz, размер до 64 MiB и длительность до 600 секунд. MP3, Opus и другие
+частоты пакет должен заранее преобразовать в такой WAV.
 
 ### Часы, input и сенсоры
 
@@ -234,6 +241,20 @@ end
 | `commands` | голосовые команды из manifest |
 | `system` | read-only информация о системе |
 | `exec` | запуск команд; для binary execution нужен отдельный флаг Luna |
+
+Для станций с аппаратным mute/unmute микрофона:
+
+```lua
+if microphone.waitformute(60000) then
+  -- микрофон выключен аппаратной кнопкой
+end
+
+if microphone.waitforunmute(60000) then
+  -- микрофон снова включён
+end
+```
+
+Эти методы скрывают аппаратный источник сигнала конкретной станции.
 
 Например, сетевой пакет должен явно описать список хостов:
 

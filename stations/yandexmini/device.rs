@@ -3,13 +3,30 @@ mod hardware;
 #[path = "microphone.rs"]
 mod microphone;
 
-use luna::{LedTopology, StationSpec};
+use luna::{GpioInput, LedTopology, StationSpec};
 
 const CAPABILITIES: &[&str] = &[
     "led.logo.rgb",
     "led.logo.6",
     "led.pattern.v1",
     "microphone.capture",
+];
+
+const GPIO_INPUTS: &[GpioInput] = &[
+    GpioInput {
+        name: "mute",
+        path: "/sys/class/gpio/gpio414/value",
+        active_level: 0,
+        code: 113,
+        action: "mute",
+    },
+    GpioInput {
+        name: "unmute",
+        path: "/sys/class/gpio/gpio505/value",
+        active_level: 1,
+        code: 113,
+        action: "unmute",
+    },
 ];
 
 pub fn spec() -> StationSpec {
@@ -29,5 +46,6 @@ pub fn spec() -> StationSpec {
         capabilities: CAPABILITIES,
         input_actions: &[],
         input_gestures: &[],
+        gpio_inputs: GPIO_INPUTS,
     }
 }

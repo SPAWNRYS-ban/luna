@@ -78,5 +78,6 @@ pub fn spec() -> StationSpec {
         capabilities: CAPABILITIES,
         input_actions: INPUT_ACTIONS,
         input_gestures: INPUT_GESTURES,
+        gpio_inputs: &[],
     }
 }

@@ -1,8 +1,9 @@
 use anyhow::{anyhow, bail, Context, Result};
 use axum::{
+    body::Body,
     extract::{DefaultBodyLimit, Multipart, Path as AxumPath, Query, State},
     http::{HeaderMap, StatusCode},
-    response::{Html, IntoResponse},
+    response::{Html, IntoResponse, Response},
     routing::{delete, get, post},
     Json, Router,
 };
@@ -127,6 +128,15 @@ pub struct InputGesture {
     pub max_gap_ms: u64,
 }
 
+#[derive(Clone, Copy)]
+pub struct GpioInput {
+    pub name: &'static str,
+    pub path: &'static str,
+    pub active_level: u8,
+    pub code: u16,
+    pub action: &'static str,
+}
+
 /// Hardware contract supplied by a station crate.
 ///
 /// The gateway owns API, permissions and package execution. A station crate
@@ -144,6 +154,7 @@ pub struct StationSpec {
     pub capabilities: &'static [&'static str],
     pub input_actions: &'static [InputAction],
     pub input_gestures: &'static [InputGesture],
+    pub gpio_inputs: &'static [GpioInput],
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -460,6 +471,12 @@ struct InputQuery {
     max_events: Option<usize>,
     idle_ms: Option<u64>,
 }
+#[derive(Debug, Deserialize)]
+struct AliceCommandQuery {
+    timeout_ms: Option<u64>,
+    #[serde(default)]
+    cancel: bool,
+}
 #[derive(Debug, Serialize)]
 struct InputDeviceInfo {
     name: String,
@@ -479,6 +496,155 @@ struct InputEventInfo {
 #[derive(Debug, Serialize)]
 struct InputGestureInfo {
     gesture: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MicrophoneRecordRequest {
+    #[serde(default)]
+    device: Option<String>,
+    seconds: u8,
+}
+
+async fn get_microphone_devices(
+    State(a): State<App>,
+) -> Result<Json<Vec<MicrophoneDevice>>, ApiError> {
+    let backend = a
+        .microphone
+        .clone()
+        .context("microphone capture is not available")?;
+    Ok(Json(backend.devices()?))
+}
+
+async fn record_microphone(
+    State(a): State<App>,
+    Json(request): Json<MicrophoneRecordRequest>,
+) -> Result<Response, ApiError> {
+    if !(1..=30).contains(&request.seconds) {
+        return Err(ApiError(anyhow!(
+            "microphone capture duration must be 1..=30 seconds"
+        )));
+    }
+    let backend = a
+        .microphone
+        .clone()
+        .context("microphone capture is not available")?;
+    let wav = task::spawn_blocking(move || {
+        backend.record(
+            request.device.as_deref(),
+            request.seconds,
+            &AtomicBool::new(false),
+        )
+    })
+    .await
+    .context("microphone capture task failed")??;
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "audio/wav")
+        .header("content-disposition", "attachment; filename=microphone.wav")
+        .body(Body::from(wav))
+        .context("build microphone response")
+        .map_err(ApiError)
+}
+
+async fn get_alice_command(
+    Query(query): Query<AliceCommandQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let timeout_ms = query.timeout_ms.unwrap_or(60_000).min(60_000);
+    let event = task::spawn_blocking(move || wait_alice_speech(timeout_ms))
+        .await
+        .context("Alice command reader task failed")??
+        .context("timeout waiting for an Alice command")?;
+    if query.cancel {
+        cancel_alice_dialog()?;
+    }
+    Ok(Json(event))
+}
+
+async fn get_alice_speech(
+    Query(query): Query<InputQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let timeout_ms = query.timeout_ms.unwrap_or(60_000).min(60_000);
+    let event = task::spawn_blocking(move || wait_alice_speech(timeout_ms))
+        .await
+        .context("Alice speech reader task failed")??
+        .context("timeout waiting for speech")?;
+    Ok(Json(event))
+}
+
+async fn get_gpio_input(
+    State(a): State<App>,
+    AxumPath(input_name): AxumPath<String>,
+    Query(query): Query<InputQuery>,
+) -> Result<Json<Option<InputEventInfo>>, ApiError> {
+    let input = a
+        .gpio_inputs
+        .iter()
+        .find(|input| input.name == input_name)
+        .with_context(|| format!("gpio input is not supported: {input_name}"))?;
+    let timeout_ms = query.timeout_ms.unwrap_or(60_000).min(60_000);
+    let input = *input;
+    let event = task::spawn_blocking(move || -> Result<Option<InputEventInfo>> {
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        let mut previous = fs::read_to_string(input.path)?
+            .trim()
+            .parse::<u8>()
+            .context("invalid GPIO value")?;
+        loop {
+            if Instant::now() >= deadline {
+                return Ok(None);
+            }
+            let current = fs::read_to_string(input.path)?
+                .trim()
+                .parse::<u8>()
+                .context("invalid GPIO value")?;
+            if current == input.active_level && previous != input.active_level {
+                return Ok(Some(InputEventInfo {
+                    device: format!("gpio-{}", input.name),
+                    kind: 1,
+                    kind_name: "EV_KEY",
+                    code: input.code,
+                    value: 1,
+                    value_name: Some("press"),
+                    action: Some(input.action),
+                    time_ms: chrono_like_now_ms(),
+                }));
+            }
+            previous = current;
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    })
+    .await
+    .context("gpio input reader task failed")??;
+    Ok(Json(event))
+}
+
+fn wait_gpio_transition(input: GpioInput, timeout_ms: u64) -> Result<bool> {
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms.min(60_000));
+    let mut previous = fs::read_to_string(input.path)?
+        .trim()
+        .parse::<u8>()
+        .context("invalid GPIO value")?;
+    loop {
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        let current = fs::read_to_string(input.path)?
+            .trim()
+            .parse::<u8>()
+            .context("invalid GPIO value")?;
+        if current == input.active_level && previous != input.active_level {
+            return Ok(true);
+        }
+        previous = current;
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn chrono_like_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or_default()
 }
 fn input_action_for(actions: &[InputAction], event: &InputEvent) -> Option<&'static str> {
     actions
@@ -526,6 +692,7 @@ struct App {
     runtime_api_url: String,
     input_actions: &'static [InputAction],
     input_gestures: &'static [InputGesture],
+    gpio_inputs: &'static [GpioInput],
 }
 #[derive(Clone)]
 struct Led {
@@ -1289,11 +1456,11 @@ fn detect_device(root: &Path, forced: Option<String>) -> DeviceProfile {
         "network".into(),
         "system".into(),
     ];
-    if command_exists("amixer") {
+    if find_amixer().is_some() {
         features.push("audio.volume.alsa".into())
     }
     if crate::audio::available() {
-        features.push("audio.play.aplay".into())
+        features.push("audio.play.mediad".into())
     }
     if command_exists("bluetoothctl") {
         features.extend([
@@ -2156,9 +2323,11 @@ fn cancel_alice_dialog() -> Result<()> {
     push_bytes(&mut remoting, 7, b"AliceCapability");
     push_bytes(&mut remoting, 8, &method);
     let mut message = Vec::new();
+    // Quasar's envelope is encoded as body=252 and type=253.  Sending the
+    // remoting body directly as field 210 is ignored by aliced on Mini 1.
     push_bytes(&mut message, 252, &remoting);
     push_varint(&mut message, 253 << 3);
-    push_varint(&mut message, 210); // QuasarMessage.remoting
+    push_varint(&mut message, 210);
     ipc_send("aliced", &message)
 }
 fn decode_ipc_event(service: &str, message: &[u8]) -> Result<Option<serde_json::Value>> {
@@ -2166,6 +2335,22 @@ fn decode_ipc_event(service: &str, message: &[u8]) -> Result<Option<serde_json::
     let message = message.as_slice();
     match service {
         "aliced" => {
+            // Local command spotter events use a separate remoting capability
+            // instead of the regular voice-dialog state message. Mini 1 sends
+            // CommandSpotterCapability with the recognized phrase in field 15.
+            if let Some(remoting) = nested_field(message, 210)? {
+                if text_field(&remoting, 7)?.as_deref() == Some("CommandSpotterCapability") {
+                    if let Some(command) = nested_field(&remoting, 15)? {
+                        if let Some(transcript) = text_field(&command, 3)? {
+                            return Ok(Some(serde_json::json!({
+                                "type": "speech",
+                                "source": "command",
+                                "transcript": transcript
+                            })));
+                        }
+                    }
+                }
+            }
             let Some(state) = nested_field(message, 3)? else {
                 return Ok(None);
             };
@@ -2291,6 +2476,55 @@ fn ipc_send(service: &str, payload: &[u8]) -> Result<()> {
     write_ipc_frame(&mut stream, payload)
 }
 
+fn file_player_remoting(method: u64, path: Option<&Path>) -> Vec<u8> {
+    let mut method_message = Vec::new();
+    push_varint(&mut method_message, 1 << 3);
+    push_varint(&mut method_message, method);
+    if let Some(path) = path {
+        push_bytes(&mut method_message, 2, path.to_string_lossy().as_bytes());
+        // FilePlayerCapabilityMethod.PlayParams: play once.
+        let mut play_params = Vec::new();
+        push_varint(&mut play_params, 2 << 3);
+        push_varint(&mut play_params, 1);
+        push_bytes(&mut method_message, 4, &play_params);
+    }
+    // The station's own FilePlayer client asks for completion events. Without
+    // this bit older Mini firmware may accept the directive but immediately
+    // tear down the player before audio reaches the hardware.
+    push_varint(&mut method_message, 5 << 3);
+    push_varint(&mut method_message, 1);
+    let mut remoting = Vec::new();
+    push_bytes(&mut remoting, 7, b"FilePlayerCapability");
+    // Remoting.file_player_capability_method is field 12. Field 8 is the
+    // Alice capability method and silently drops this message in mediad.
+    push_bytes(&mut remoting, 12, &method_message);
+    let mut message = Vec::new();
+    push_bytes(&mut message, 210, &remoting); // QuasarMessage.remoting
+    message
+}
+
+pub(crate) fn play_audio_file(path: &Path) -> Result<()> {
+    crate::audio::validate_file(path)?;
+    // FilePlayerCapability is owned by aliced. aliced forwards the actual
+    // decoded audio to mediad; mediad is not the capability endpoint.
+    let endpoint = ipc_endpoint("aliced")?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut stream = connect_ipc(endpoint, deadline)?.context("Quasar aliced is unavailable")?;
+    // aliced uses the remoting handshake before accepting FilePlayer commands.
+    // The handshake response is optional on older firmware, so do not require
+    // it before sending the actual request.
+    write_ipc_frame(&mut stream, &file_player_remoting(2, Some(path)))?;
+    let handshake_deadline = Instant::now() + Duration::from_millis(250);
+    let _ = read_ipc_frame(&mut stream, handshake_deadline)?;
+    // FilePlayerCapabilityMethod.PLAY_SOUND_FILE is enum value 0.
+    write_ipc_frame(&mut stream, &file_player_remoting(0, Some(path)))?;
+    // aliced forwards the accepted directive asynchronously to mediad. Keep
+    // the client channel alive for the same short handoff window used by the
+    // station's own clients before dropping the socket.
+    std::thread::sleep(Duration::from_millis(300));
+    Ok(())
+}
+
 fn ipc_request(service: &str, payload: &[u8], timeout_ms: u64) -> Result<Option<Vec<u8>>> {
     if timeout_ms > 60_000 {
         bail!("IPC timeout is limited to 60 seconds")
@@ -2334,53 +2568,17 @@ fn ipc_next(service: &str, timeout_ms: u64) -> Result<Option<serde_json::Value>>
     if timeout_ms > 60_000 {
         bail!("IPC timeout is limited to 60 seconds")
     }
-    let endpoint = ipc_endpoint(service)?;
     let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(1));
     loop {
-        let Some(mut stream) = connect_ipc(endpoint, deadline)? else {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
             return Ok(None);
-        };
-        let mut header = [0u8; 4];
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Ok(None);
-            }
-            stream.set_read_timeout(Some(remaining))?;
-            match stream.read_exact(&mut header) {
-                Ok(()) => {}
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-                    ) =>
-                {
-                    return Ok(None)
-                }
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::UnexpectedEof
-                            | std::io::ErrorKind::ConnectionAborted
-                            | std::io::ErrorKind::ConnectionReset
-                    ) =>
-                {
-                    break
-                }
-                Err(error) => return Err(error.into()),
-            }
-            let mut payload = vec![0; ipc_frame_length(header)?];
-            if let Err(error) = stream.read_exact(&mut payload) {
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::UnexpectedEof
-                        | std::io::ErrorKind::ConnectionAborted
-                        | std::io::ErrorKind::ConnectionReset
-                ) {
-                    break;
-                }
-                return Err(error.into());
-            }
+        }
+        // aliced/alarmd publish events through short-lived polling
+        // connections. Keeping one socket open works on some firmware, but
+        // Mini 1 does not deliver speech events that way.
+        let wait_ms = remaining.as_millis().clamp(1, 100) as u64;
+        if let Some(payload) = ipc_receive(service, wait_ms)? {
             // A successful wire-level parse is the minimum validation for a
             // proto2 QuasarMessage; unknown fields are intentionally retained.
             protobuf_fields(&payload)?;
@@ -2388,6 +2586,23 @@ fn ipc_next(service: &str, timeout_ms: u64) -> Result<Option<serde_json::Value>>
                 return Ok(Some(event));
             }
         }
+    }
+}
+
+/// Wait for the next speech event from aliced. BetterYAM's command listener
+/// accepts both `voice` and `command` events and matches the transcript itself.
+fn wait_alice_speech(timeout_ms: u64) -> Result<Option<serde_json::Value>> {
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(1));
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(None);
+        }
+        let event = ipc_next("aliced", remaining.as_millis().min(60_000) as u64)?;
+        let Some(event) = event else {
+            return Ok(None);
+        };
+        return Ok(Some(event));
     }
 }
 
@@ -2491,6 +2706,43 @@ fn command_exists(name: &str) -> bool {
     std::env::var_os("PATH")
         .is_some_and(|paths| std::env::split_paths(&paths).any(|p| p.join(name).is_file()))
 }
+const SYSTEM_AMIXER: &str = "/system/workdir/bin/amixer";
+const STATION_ALSA_LIBS: &str = "/bkupgrade/data/bundle/ap2/libs:/system/workdir/lib";
+
+fn find_amixer() -> Option<PathBuf> {
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|paths| {
+            std::env::split_paths(&paths)
+                .map(|path| path.join("amixer"))
+                .collect::<Vec<_>>()
+        })
+        .chain(std::iter::once(PathBuf::from(SYSTEM_AMIXER)))
+        .find(|path| path.is_file())
+}
+
+fn amixer_output(args: &[String]) -> Result<String> {
+    let path = find_amixer().context("amixer is not available on this station")?;
+    let mut command = Command::new(&path);
+    if path == Path::new(SYSTEM_AMIXER) {
+        command
+            .env("LD_LIBRARY_PATH", STATION_ALSA_LIBS)
+            .env("ALSA_CONFIG_PATH", "/etc/asound.conf");
+    }
+    let output = command
+        .args(args)
+        .output()
+        .with_context(|| format!("run {}", path.display()))?;
+    if !output.status.success() {
+        bail!(
+            "{} exited with {}: {}",
+            path.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
 fn command_output(program: &str, args: &[String]) -> Result<String> {
     let output = Command::new(program)
         .args(args)
@@ -2537,7 +2789,7 @@ fn lua_api_available(device: &DeviceProfile, name: &str) -> Result<bool> {
             .iter()
             .any(|feature| feature.starts_with("led.")),
         "volume" => has_feature("audio.volume.alsa"),
-        "audio" => has_feature("audio.play.aplay"),
+        "audio" => has_feature("audio.play.mediad") || has_feature("audio.play.aplay"),
         "microphone" => has_feature("microphone.capture"),
         "bluetooth" => has_feature("bluetooth.bluez"),
         "display" => has_feature("display.backlight"),
@@ -2602,6 +2854,7 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
     };
     let led = app.led.clone();
     let microphone = app.microphone.clone();
+    let gpio_inputs = app.gpio_inputs;
     let clock_backend = app.clock.clone();
     let room = Room::load(&app.root)?.room;
     let lua_settings = app.settings.lock().await.lua.clone();
@@ -2807,18 +3060,14 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
                     if percent > 100 {
                         return Err(mlua::Error::external("volume must be 0..100"));
                     };
-                    command_output(
-                        "amixer",
-                        &["set".into(), "Master".into(), format!("{percent}%")],
-                    )
-                    .map_err(mlua::Error::external)
+                    amixer_output(&["set".into(), "Master".into(), format!("{percent}%")])
+                        .map_err(mlua::Error::external)
                 })?,
             )?;
             volume.set(
                 "get",
                 lua.create_function(|_, ()| {
-                    command_output("amixer", &["get".into(), "Master".into()])
-                        .map_err(mlua::Error::external)
+                    amixer_output(&["get".into(), "Master".into()]).map_err(mlua::Error::external)
                 })?,
             )?;
             api.set("volume", volume)?;
@@ -2834,7 +3083,7 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
                     if !path.is_file() {
                         return Err(mlua::Error::external("audio file not found"));
                     };
-                    crate::audio::play(&path).map_err(mlua::Error::external)
+                    crate::gateway::play_audio_file(&path).map_err(mlua::Error::external)
                 })?,
             )?;
             api.set("audio", audio)?;
@@ -2870,6 +3119,34 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
                         .record(device.as_deref(), seconds, &cancelled_record)
                         .map_err(mlua::Error::external)?;
                     Ok(lua.create_string(wav)?)
+                })?,
+            )?;
+            let mute_input = gpio_inputs
+                .iter()
+                .find(|input| input.name == "mute")
+                .copied();
+            let unmute_input = gpio_inputs
+                .iter()
+                .find(|input| input.name == "unmute")
+                .copied();
+            microphone_api.set(
+                "waitformute",
+                lua.create_function(move |_, timeout_ms: Option<u64>| {
+                    let input = mute_input
+                        .context("microphone mute input is not available")
+                        .map_err(mlua::Error::external)?;
+                    wait_gpio_transition(input, timeout_ms.unwrap_or(60_000))
+                        .map_err(mlua::Error::external)
+                })?,
+            )?;
+            microphone_api.set(
+                "waitforunmute",
+                lua.create_function(move |_, timeout_ms: Option<u64>| {
+                    let input = unmute_input
+                        .context("microphone unmute input is not available")
+                        .map_err(mlua::Error::external)?;
+                    wait_gpio_transition(input, timeout_ms.unwrap_or(60_000))
+                        .map_err(mlua::Error::external)
                 })?,
             )?;
             api.set("microphone", microphone_api)?;
@@ -3357,6 +3634,17 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
                 .iter()
                 .any(|feature| feature == "display.clock.segment.v1"),
         )?;
+        lua_device.set(
+            "has_mute_button",
+            gpio_inputs.iter().any(|input| input.name == "mute"),
+        )?;
+        lua_device.set(
+            "has_microphone",
+            device
+                .features
+                .iter()
+                .any(|feature| feature == "microphone.capture"),
+        )?;
         lua_device.set("room", room)?;
         lua_device.set("HasRing", device.led.ring_count > 0)?;
         lua_device.set("RingCount", device.led.ring_count)?;
@@ -3368,6 +3656,17 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
                 .features
                 .iter()
                 .any(|feature| feature == "display.clock.segment.v1"),
+        )?;
+        lua_device.set(
+            "HasMuteButton",
+            gpio_inputs.iter().any(|input| input.name == "mute"),
+        )?;
+        lua_device.set(
+            "HasMicrophone",
+            device
+                .features
+                .iter()
+                .any(|feature| feature == "microphone.capture"),
         )?;
         let lua_features = lua.create_table()?;
         for (i, feature) in device.features.iter().enumerate() {
@@ -3732,6 +4031,18 @@ async fn run_lua_file(
     let plugin_root = a.root.join("plugins").join(&id);
     fs::create_dir_all(&plugin_root)?;
     fs::copy(&source_path, plugin_root.join("main.lua"))?;
+    for entry in walkdir::WalkDir::new(&share_root) {
+        let entry = entry?;
+        if !entry.file_type().is_file() || entry.path() == source_path {
+            continue;
+        }
+        let relative = entry.path().strip_prefix(&share_root)?;
+        let destination = plugin_root.join(relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(entry.path(), destination)?;
+    }
     let manifest = Manifest {
         id: id.clone(),
         name: format!("User Lua: {}", request.file),
@@ -4202,6 +4513,144 @@ async fn get_sensors() -> Json<Vec<SensorInfo>> {
             .collect(),
     )
 }
+#[derive(Debug, Deserialize)]
+struct VolumeRequest {
+    percent: u8,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct VolumeStepRequest {
+    #[serde(default)]
+    percent: Option<u8>,
+}
+
+#[derive(Debug, Serialize)]
+struct VolumeResponse {
+    percent: u8,
+}
+
+fn amixer_volume() -> Result<u8> {
+    let output = amixer_output(&["get".into(), "Master".into()])?;
+    let percent = output
+        .match_indices('%')
+        .next_back()
+        .and_then(|(index, _)| {
+            output[..index]
+                .chars()
+                .rev()
+                .take_while(|ch| ch.is_ascii_digit())
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect::<String>()
+                .parse::<u8>()
+                .ok()
+        })
+        .context("cannot parse Master volume from amixer output")?;
+    Ok(percent)
+}
+
+fn volume_manager_message(percent: u8, muted: bool) -> Vec<u8> {
+    // quasar.proto.QuasarMessage.volume_manager_message = 200
+    // quasar.proto.VolumeManager.set_volume_signal = 2
+    // SetVolumeSignal.platform_volume is an integer in 0..10000.
+    let mut signal = Vec::new();
+    push_varint(&mut signal, 1 << 3);
+    push_varint(&mut signal, u64::from(percent) * 100);
+    push_varint(&mut signal, 3 << 3);
+    push_varint(&mut signal, u64::from(muted));
+    push_bytes(&mut signal, 4, b"luna");
+
+    let mut manager = Vec::new();
+    push_bytes(&mut manager, 2, &signal);
+    let mut message = Vec::new();
+    push_bytes(&mut message, 200, &manager);
+    message
+}
+
+fn set_volume_via_maind(percent: u8, muted: bool) -> Result<()> {
+    let endpoint = ipc_endpoint("volume_manager")?;
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let mut stream =
+        connect_ipc(endpoint, deadline)?.context("maind volume manager is unavailable")?;
+    write_ipc_frame(&mut stream, &volume_manager_message(percent, muted))
+}
+
+fn set_volume_backend(percent: u8, muted: bool) -> Result<()> {
+    // Prefer maind/VQE so Alice, the touch sensor and Luna share one state.
+    // Some older Mini firmware advertises volume_manager.port but does not
+    // actually expose the listener; retain ALSA as a compatibility fallback.
+    if set_volume_via_maind(percent, muted).is_ok() {
+        return Ok(());
+    }
+    amixer_output(&[
+        "set".into(),
+        "Master".into(),
+        format!("{}% {}", percent, if muted { "mute" } else { "unmute" }),
+    ])?;
+    Ok(())
+}
+
+async fn get_volume() -> Result<Json<VolumeResponse>, ApiError> {
+    Ok(Json(VolumeResponse {
+        percent: amixer_volume()?,
+    }))
+}
+
+async fn set_volume(Json(request): Json<VolumeRequest>) -> Result<Json<VolumeResponse>, ApiError> {
+    if request.percent > 100 {
+        return Err(ApiError(anyhow!("volume must be 0..100")));
+    }
+    set_volume_backend(request.percent, false)?;
+    Ok(Json(VolumeResponse {
+        percent: amixer_volume()?,
+    }))
+}
+
+async fn change_volume(
+    direction: i16,
+    request: Option<Json<VolumeStepRequest>>,
+) -> Result<Json<VolumeResponse>, ApiError> {
+    let step = request
+        .and_then(|Json(request)| request.percent)
+        .unwrap_or(5);
+    if step == 0 || step > 100 {
+        return Err(ApiError(anyhow!("volume step must be 1..100")));
+    }
+    let current = amixer_volume()? as i16;
+    let next = (current + direction * step as i16).clamp(0, 100) as u8;
+    set_volume_backend(next, false)?;
+    Ok(Json(VolumeResponse {
+        percent: amixer_volume()?,
+    }))
+}
+
+async fn volume_up(
+    request: Option<Json<VolumeStepRequest>>,
+) -> Result<Json<VolumeResponse>, ApiError> {
+    change_volume(1, request).await
+}
+
+async fn volume_down(
+    request: Option<Json<VolumeStepRequest>>,
+) -> Result<Json<VolumeResponse>, ApiError> {
+    change_volume(-1, request).await
+}
+
+async fn set_mute(muted: bool) -> Result<Json<VolumeResponse>, ApiError> {
+    set_volume_backend(amixer_volume()?, muted)?;
+    Ok(Json(VolumeResponse {
+        percent: amixer_volume()?,
+    }))
+}
+
+async fn mute_volume() -> Result<Json<VolumeResponse>, ApiError> {
+    set_mute(true).await
+}
+
+async fn unmute_volume() -> Result<Json<VolumeResponse>, ApiError> {
+    set_mute(false).await
+}
 async fn get_input_devices() -> Result<Json<Vec<InputDeviceInfo>>, ApiError> {
     let listing =
         fs::read_to_string("/proc/bus/input/devices").context("read /proc/bus/input/devices")?;
@@ -4661,6 +5110,11 @@ pub async fn run_with_station(station: Option<StationSpec>) -> Result<()> {
         device.model = spec.model.into();
         device.led = spec.led_topology;
         for capability in spec.capabilities {
+            if *capability == "microphone.capture"
+                && !Path::new("/system/vendor/quasar/maind").is_file()
+            {
+                continue;
+            }
             if !device.features.iter().any(|feature| feature == capability) {
                 device.features.push((*capability).into());
             }
@@ -4704,6 +5158,7 @@ pub async fn run_with_station(station: Option<StationSpec>) -> Result<()> {
         runtime_api_url: crate::updater::runtime_api_url(&args.listen)?,
         input_actions: station.map(|spec| spec.input_actions).unwrap_or(&[]),
         input_gestures: station.map(|spec| spec.input_gestures).unwrap_or(&[]),
+        gpio_inputs: station.map(|spec| spec.gpio_inputs).unwrap_or(&[]),
     };
     let updater_device = app.device.lock().await.clone();
     start_auto_updater(
@@ -4815,9 +5270,19 @@ pub async fn run_with_station(station: Option<StationSpec>) -> Result<()> {
             .route("/api/device", get(get_device).put(put_device))
             .route("/api/room", get(get_room).put(put_room))
             .route("/api/sensors", get(get_sensors))
+            .route("/api/volume", get(get_volume).post(set_volume))
+            .route("/api/volume/up", post(volume_up))
+            .route("/api/volume/down", post(volume_down))
+            .route("/api/volume/mute", post(mute_volume))
+            .route("/api/volume/unmute", post(unmute_volume))
+            .route("/api/microphone/devices", get(get_microphone_devices))
+            .route("/api/microphone/record", post(record_microphone))
+            .route("/api/alice/command", get(get_alice_command))
+            .route("/api/alice/speech", get(get_alice_speech))
             .route("/api/input/devices", get(get_input_devices))
             .route("/api/input/event", get(get_input_event))
             .route("/api/input/events", get(get_input_events))
+            .route("/api/input/gpio/:input", get(get_gpio_input))
             .route("/api/input/swipe/:gesture", get(get_input_gesture))
             .route("/api/input/:action", get(get_input_action))
             .route("/api/clock", get(get_clock).post(post_clock))
@@ -4861,6 +5326,22 @@ mod tests {
     }
 
     #[test]
+    fn ipc_decodes_local_command_spotter_event() {
+        let mut command = Vec::new();
+        push_varint(&mut command, 1 << 3);
+        push_varint(&mut command, 2);
+        push_bytes(&mut command, 3, "громче".as_bytes());
+        let mut remoting = Vec::new();
+        push_bytes(&mut remoting, 7, b"CommandSpotterCapability");
+        push_bytes(&mut remoting, 15, &command);
+        let mut message = Vec::new();
+        push_bytes(&mut message, 210, &remoting);
+        let event = decode_ipc_event("aliced", &message).unwrap().unwrap();
+        assert_eq!(event["source"], "command");
+        assert_eq!(event["transcript"], "громче");
+    }
+
+    #[test]
     fn ipc_frame_length_uses_signed_10_mib_bound() {
         assert_eq!(
             ipc_frame_length((IPC_MAX_FRAME_SIZE as i32).to_le_bytes()).unwrap(),
@@ -4882,7 +5363,6 @@ mod tests {
         push_bytes(&mut message, 252, &remoting);
         push_varint(&mut message, 253 << 3);
         push_varint(&mut message, 210);
-        assert_eq!(varint_field(&message, 253).unwrap(), Some(210));
         let remoting = nested_field(&message, 252).unwrap().unwrap();
         assert_eq!(
             text_field(&remoting, 7).unwrap().as_deref(),
@@ -4910,7 +5390,7 @@ mod tests {
         let device = DeviceProfile {
             model: "yandexmicro".into(),
             architecture: "aarch64".into(),
-            features: vec!["led.ring.rgb".into(), "audio.play.aplay".into()],
+            features: vec!["led.ring.rgb".into(), "audio.play.mediad".into()],
             source: "test".into(),
             led: LedTopology::default(),
         };

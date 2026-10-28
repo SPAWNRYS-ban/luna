@@ -10,5 +10,6 @@ path = "station_main.rs"
 [dependencies]
 anyhow = "1"
 libc = "0.2"
+serde_json = "1"
 luna = { path = "../.." }
 

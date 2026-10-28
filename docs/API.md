@@ -235,6 +235,54 @@ LED выбранной зоны: если цветов меньше, они ра
 Если цветов больше, чем LED, API возвращает `400` и не применяет кадр — лишние
 цвета не отбрасываются молча.
 
+## Громкость
+
+Текущая громкость:
+
+```sh
+curl "$BASE/volume"
+```
+
+Ответ:
+
+```json
+{"percent":35}
+```
+
+Установка громкости от 0 до 100 процентов:
+
+```sh
+curl -X POST "$BASE/volume" \
+  -H 'Content-Type: application/json' \
+  -d '{"percent":20}'
+```
+
+При успехе API возвращает `200` и установленное значение. Если ALSA Mixer
+недоступен или значение некорректно, API возвращает `400` с JSON вида
+`{"error":"..."}`.
+
+Изменение громкости на 5 процентов (шаг по умолчанию):
+
+```sh
+curl -X POST "$BASE/volume/up"
+curl -X POST "$BASE/volume/down"
+```
+
+Свой шаг можно передать в JSON:
+
+```sh
+curl -X POST "$BASE/volume/up" \
+  -H 'Content-Type: application/json' \
+  -d '{"percent":10}'
+```
+
+Управление mute:
+
+```sh
+curl -X POST "$BASE/volume/mute"
+curl -X POST "$BASE/volume/unmute"
+```
+
 ### Установка цветов
 
 | Метод | Endpoint | Действие |
@@ -307,6 +355,79 @@ curl -X POST "$BASE/clock" \
 curl -X POST "$BASE/clock/off"
 ```
 
+## Микрофоны
+
+Список доступных физических каналов:
+
+```sh
+curl "$BASE/microphone/devices"
+```
+
+Записать выбранный микрофон в WAV:
+
+```sh
+curl -X POST "$BASE/microphone/record" \
+  -H 'Content-Type: application/json' \
+  -d '{"device":"raw_mic_0","seconds":5}' \
+  -o microphone.wav
+```
+
+device можно не указывать — тогда используется первый канал. Длительность
+ограничена диапазоном 1..30 секунд.
+
+## Речь и локальные команды Алисы
+
+Luna получает распознанные события от локального `aliced`. API не включает
+микрофон и не регистрирует собственные wake word или фразы: он только читает
+события, которые уже классифицировала прошивка станции.
+
+### `GET /api/alice/speech`
+
+Ожидает следующее событие распознанной речи. Таймаут ограничен 60 секундами:
+
+```sh
+curl -i -N --max-time 65 \
+  "$BASE/alice/speech?timeout_ms=60000"
+```
+
+Пример ответа для обычной фразы после wake word:
+
+```json
+{
+  "type": "speech",
+  "source": "voice",
+  "transcript": "Привет"
+}
+```
+
+### `GET /api/alice/command`
+
+Ожидает событие голосовой команды. В ответе сохраняется `source`:
+
+- `command` — команда распознана локальным command spotter;
+- `voice` — обычная фраза голосового диалога, обычно после wake word.
+
+```sh
+curl -i -N --max-time 65 \
+  "$BASE/alice/command?timeout_ms=60000"
+```
+
+Чтобы после получения события отправить в `aliced` отмену текущего диалога,
+добавьте `cancel=true`:
+
+```sh
+curl -i -N --max-time 65 \
+  "$BASE/alice/command?timeout_ms=60000&cancel=true"
+```
+
+Для локального события `source=command` это позволяет перехватить команду до
+обычного голосового диалога. Для `source=voice` прошивка может уже успеть
+отправить запрос в сеть.
+
+На Mini 1 command spotter содержит, в частности, команды `громче`, `тише`,
+`дальше`, `назад`, `пауза`, `стоп`, `продолжи`, `включи свет` и `выключи
+свет`. Их следует произносить без слова «Алиса».
+
 ## Input и кнопки
 
 ### `GET /api/input/devices`
@@ -346,6 +467,39 @@ curl '$BASE/input/volume_up?timeout_ms=60000'
   "value_name":"press",
   "action":"volume_up",
   "time_ms":1793181409377
+}
+```
+
+### Прямые GPIO-кнопки
+
+На Mini 1 физическая кнопка mute не формирует evdev-событие. Она доступна
+через GPIO backend станции:
+
+```sh
+curl '$BASE/input/gpio/mute?timeout_ms=60000'
+```
+
+Ответ имеет тот же формат input-события:
+
+Для Mini 1 доступны отдельные аппаратные линии:
+
+```sh
+curl '$BASE/input/gpio/mute?timeout_ms=60000'
+curl '$BASE/input/gpio/unmute?timeout_ms=60000'
+```
+
+`mute` отслеживает GPIO414 с falling edge, а `unmute` — GPIO505 с rising
+edge.
+
+```json
+{
+  "device": "gpio-mute",
+  "kind": 1,
+  "kind_name": "EV_KEY",
+  "code": 113,
+  "value": 1,
+  "value_name": "press",
+  "action": "mute"
 }
 ```
 
@@ -528,6 +682,10 @@ if device.HasRing then
   alice.led.set.ring({"#ff0000"})
 end
 ```
+
+Для микрофона используйте `device.has_microphone` (или `device.HasMicrophone`).
+Функция считается доступной только при наличии штатного `maind` и capability
+`microphone.capture`.
 
 Доступные поля LED:
 
