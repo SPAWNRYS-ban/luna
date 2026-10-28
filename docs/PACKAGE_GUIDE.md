@@ -106,11 +106,11 @@ features = ["input.evdev"]
 зона, и только потом вызываем её API.
 
 ```lua
-if device.has_ring and alice.led.set.ring.is_available() then
+if device.has_ring then
   alice.led.set.ring({"#00aaff"})
 end
 
-if device.has_logo and alice.led.set.logo.is_available() then
+if device.has_logo then
   alice.led.set.logo({"#ffffff"})
 end
 ```
@@ -154,11 +154,11 @@ if alice.led.is_available() then
   alice.led.set({"#ff0000", "#0000ff"})
 end
 
-if device.has_ring and alice.led.set.ring.is_available() then
+if device.has_ring then
   alice.led.set.ring({"#00ff00"})
 end
 
-if device.has_logo and alice.led.set.logo.is_available() then
+if device.has_logo then
   alice.led.set.logo({"#ffffff"})
 end
 
