@@ -7,16 +7,19 @@ param(
     [switch]$Uninstall
 )
 $ErrorActionPreference = "Stop"
+function Log([string]$Message) { Write-Host ("[{0}] {1}" -f (Get-Date -Format "HH:mm:ss"), $Message) }
 function Require-Command([string]$Name) {
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) { throw "$Name is required. Install Android Platform Tools and add adb to PATH." }
 }
 function Invoke-AdbShell([string]$Command) {
+    Log "ADB shell: $Command"
     $result = & adb -s $Serial shell sh -c $Command 2>&1
     if ($LASTEXITCODE -ne 0) { throw "adb shell failed: $result" }
+    Log "ADB shell complete"
     return ($result -join [Environment]::NewLine)
 }
 function Invoke-AdbOptional([string]$Command) {
-    try { return Invoke-AdbShell $Command } catch { return "" }
+    try { return Invoke-AdbShell $Command } catch { Log "optional probe failed: $Command"; return "" }
 }
 function Compact([string]$Value) {
     if ([string]::IsNullOrWhiteSpace($Value)) { return "" }
@@ -37,6 +40,7 @@ if (-not $Serial) {
     }
 }
 if ((& adb -s $Serial get-state 2>$null) -ne "device") { throw "ADB station is offline: $Serial" }
+Log "Connected to station $Serial"
 $url = if ($Version -eq "latest") { "$Repository/releases/latest/download" } else {
     if ($Version -notmatch '^v') { $Version = "v$Version" }
     "$Repository/releases/download/$Version"
@@ -58,17 +62,19 @@ echo "Luna removed"
         Write-Host "Luna removed from $Serial"
         return
     }
+    Log "Downloading release metadata"
     Invoke-WebRequest "$url/manifest.json" -OutFile "$temp/manifest.json" -UseBasicParsing
     Invoke-WebRequest "$url/SHA256SUMS" -OutFile "$temp/SHA256SUMS" -UseBasicParsing
     $manifest = Get-Content "$temp/manifest.json" -Raw | ConvertFrom-Json
+    Log "Detecting station"
     $unameA = Invoke-AdbOptional 'uname -a'
     $hostname = Invoke-AdbOptional 'uname -n'
     $arch = Invoke-AdbOptional 'uname -m'
     $abi = Invoke-AdbOptional 'getprop ro.product.cpu.abi 2>/dev/null || true'
     $model = Invoke-AdbOptional 'getprop ro.product.model 2>/dev/null || true'
     $device = Invoke-AdbOptional 'getprop ro.product.device 2>/dev/null || true'
-    $dt = Invoke-AdbOptional 'cat /proc/device-tree/model 2>/dev/null || true'
-    $compatible = Invoke-AdbOptional 'cat /proc/device-tree/compatible 2>/dev/null | tr "\000" "\n" || true'
+    $dt = ""
+    $compatible = ""
     if ($arch -eq 'arm64-v8a') { $arch = 'aarch64' }
     if ($arch -eq 'armeabi-v7a') { $arch = 'armv7' }
     if (-not $arch -and $abi -eq 'arm64-v8a') { $arch = 'aarch64' }
@@ -99,13 +105,15 @@ echo "Luna removed"
     if ($found.Count -ne 1) { throw "Unsupported or ambiguous station. Detected: $($values -join ', ') (arch=$arch, abi=$abi)" }
     $entry = $found[0]
     $asset = $entry.asset
-    Write-Host "Detected $($entry.device) ($($entry.codename)) [$arch]"
+    Log "Detected $($entry.device) ($($entry.codename)) [$arch]"
+    Log "Downloading $asset"
     Invoke-WebRequest "$url/$asset" -OutFile "$temp/$asset" -UseBasicParsing
     $sumLine = Get-Content "$temp/SHA256SUMS" | Where-Object { $_ -match "\s$([regex]::Escape($asset))$" } | Select-Object -First 1
     if (-not $sumLine) { throw "No checksum found for $asset" }
     $expected = ($sumLine -split '\s+')[0].ToLowerInvariant()
     $actual = (Get-FileHash "$temp/$asset" -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($expected -ne $actual) { throw "Checksum mismatch for $asset" }
+    Log "Checksum verified"
     $init = @'
 #!/bin/sh
 # Managed by Luna
@@ -143,12 +151,14 @@ chmod 0755 "$init"; "$init" start
 echo "Luna installed"
 '@
     $remoteText = $remoteText.Replace("__INIT__", $init)
+    Log "Uploading $asset to $RemoteRoot"
     Set-Content -Path "$temp/remote.sh" -Value $remoteText -Encoding ascii
     & adb -s $Serial push "$temp/$asset" "$RemoteRoot/bin/luna.new" | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "adb push failed" }
+    Log "Starting Luna on the station"
     Get-Content "$temp/remote.sh" -Raw | & adb -s $Serial shell "LUNA_ROOT='$RemoteRoot' sh -s"
     if ($LASTEXITCODE -ne 0) { throw "Remote installation failed" }
-    Write-Host "Luna installed on $Serial ($($entry.device)); API port 8099"
+    Log "Luna installed on $Serial ($($entry.device)); API port 8099"
 } finally {
     Remove-Item $temp -Recurse -Force -ErrorAction SilentlyContinue
 }

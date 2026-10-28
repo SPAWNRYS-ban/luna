@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
 
 VERSION=${1:-${LUNA_VERSION:-latest}}
 REPOSITORY=${LUNA_REPOSITORY:-https://github.com/nyakokitsu/luna}
@@ -39,10 +40,13 @@ if [ -z "$SERIAL" ]; then
   fi
 fi
 adb -s "$SERIAL" get-state | grep -qx device || { echo "ADB station is offline" >&2; exit 6; }
+log "Connected to station $SERIAL"
 
+log "Downloading release metadata"
 download "$URL/SHA256SUMS" "$TMP/SHA256SUMS"
 download "$URL/manifest.json" "$TMP/manifest.json"
 adb_optional() { adb -s "$SERIAL" shell "$1" 2>/dev/null || true; }
+log "Detecting station"
 UNAME_A=$(adb_optional 'uname -a')
 HOSTNAME=$(adb_optional 'uname -n')
 ARCH=$(adb_optional 'uname -m')
@@ -78,7 +82,9 @@ IFS="$(printf '\t')" read -r DEVICE ASSET CODENAME <<EOF
 $RECORD
 EOF
 echo "Detected $DEVICE${CODENAME:+ ($CODENAME)} ($ARCH)" >&2
+log "Downloading $ASSET"
 download "$URL/$ASSET" "$TMP/$ASSET"
+log "Verifying checksum"
 verify "$TMP/$ASSET"
 
 REMOTE="$TMP/remote.sh"
@@ -117,6 +123,8 @@ chmod 0755 "$init"; "$init" start; sleep 1
 pid=$(cat "$pidfile" 2>/dev/null || true); case "$pid" in ''|*[!0-9]*) cat "$logfile" 2>/dev/null || true; exit 1 ;; esac
 kill -0 "$pid" 2>/dev/null || { cat "$logfile" 2>/dev/null || true; exit 1; }
 REMOTE
+log "Uploading $ASSET to $ROOT"
 adb -s "$SERIAL" push "$TMP/$ASSET" "$ROOT/bin/luna.new" >/dev/null
+log "Starting Luna on the station"
 adb -s "$SERIAL" shell "LUNA_ROOT='$ROOT' sh -s" <"$REMOTE"
-echo "Luna installed: $DEVICE ($CODENAME), API port 8099"
+log "Luna installed: $DEVICE ($CODENAME), API port 8099"
