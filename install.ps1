@@ -13,10 +13,22 @@ function Require-Command([string]$Name) {
 }
 function Invoke-AdbShell([string]$Command) {
     Log "ADB shell: $Command"
-    $result = & adb -s $Serial shell sh -c $Command 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "adb shell failed: $result" }
+    $job = Start-Job -ScriptBlock {
+        param($JobSerial, $JobCommand)
+        $output = & adb -s $JobSerial shell sh -c $JobCommand 2>&1
+        [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = @($output) }
+    } -ArgumentList $Serial, $Command
+    if (-not (Wait-Job $job -Timeout 10)) {
+        Stop-Job $job -ErrorAction SilentlyContinue
+        Remove-Job $job -Force -ErrorAction SilentlyContinue
+        throw "adb shell timed out after 10 seconds: $Command"
+    }
+    $payload = Receive-Job $job
+    Remove-Job $job -Force -ErrorAction SilentlyContinue
+    $result = @($payload.Output) -join [Environment]::NewLine
+    if ([int]$payload.ExitCode -ne 0) { throw "adb shell failed: $result" }
     Log "ADB shell complete"
-    return ($result -join [Environment]::NewLine)
+    return $result
 }
 function Invoke-AdbOptional([string]$Command) {
     try { return Invoke-AdbShell $Command } catch { Log "optional probe failed: $Command"; return "" }
