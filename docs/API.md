@@ -480,8 +480,6 @@ curl -X POST "$BASE/plugins/example.plugin/invoke" \
 X-Luna-Token: TOKEN
 ```
 
-`X-YAM-Token` принимается только как совместимость со старыми пакетами.
-
 Доступ дополнительно проверяется permission-ами manifest пакета.
 
 | Метод | Endpoint | Permission |

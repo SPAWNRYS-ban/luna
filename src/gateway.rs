@@ -1829,13 +1829,12 @@ fn ipc_endpoint(service: &str) -> Result<SocketAddr> {
     {
         bail!("invalid Quasar IPC service name")
     }
-    let luna_variable = format!("LUNA_{}_ADDR", service.to_ascii_uppercase());
-    let legacy_variable = format!("YAM_{}_ADDR", service.to_ascii_uppercase());
-    let address = match std::env::var(&luna_variable).or_else(|_| std::env::var(&legacy_variable)) {
+    let variable = format!("LUNA_{}_ADDR", service.to_ascii_uppercase());
+    let address = match std::env::var(&variable) {
         Ok(address) => address,
         Err(_) => {
             let config = std::fs::read_to_string(QUASAR_CONFIG)
-                .with_context(|| format!("read {QUASAR_CONFIG} or set {luna_variable}"))?;
+                .with_context(|| format!("read {QUASAR_CONFIG} or set {variable}"))?;
             let port = quasar_service_port(&config, service)?
                 .with_context(|| format!("{service}.port is not configured"))?;
             format!("127.0.0.1:{port}")
@@ -3220,13 +3219,9 @@ async fn run_binary(
             .args(invocation_args)
             .current_dir(&root)
             .env("LD_LIBRARY_PATH", binary_library_path(&manifest, &root))
-            .env("LUNA_API_URL", &api_url)
-            .env("LUNA_API_TOKEN", &token)
-            .env("LUNA_PLUGIN_ID", &task_id)
-            // Compatibility for packages built against the original YAM host API.
-            .env("YAM_API_URL", api_url)
-            .env("YAM_API_TOKEN", token)
-            .env("YAM_PLUGIN_ID", task_id)
+            .env("LUNA_API_URL", api_url)
+            .env("LUNA_API_TOKEN", token)
+            .env("LUNA_PLUGIN_ID", task_id)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
@@ -3827,7 +3822,6 @@ async fn runtime_permission(
     validate_id(id)?;
     let token = headers
         .get("x-luna-token")
-        .or_else(|| headers.get("x-yam-token"))
         .and_then(|value| value.to_str().ok())
         .context("missing X-Luna-Token")?;
     if app.runtime_tokens.lock().await.get(id).map(String::as_str) != Some(token) {

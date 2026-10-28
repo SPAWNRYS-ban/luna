@@ -274,23 +274,23 @@
     </div>
 
     <h3>Runtime API</h3>
-    <div class="hint">Токен будет отправлен как `X-YAM-Token` для всех runtime endpoint-ов.</div>
-    <input id="runtime-token" type="password" placeholder="X-YAM-Token" style="width:min(100%,420px);margin:8px 0 12px">
+    <div class="hint">Токен будет отправлен как `X-Luna-Token` для всех runtime endpoint-ов.</div>
+    <input id="runtime-token" type="password" placeholder="X-Luna-Token" style="width:min(100%,420px);margin:8px 0 12px">
     <div class="endpoint" data-method="GET" data-path="/runtime/example.plugin/device">
       <div><div class="endpoint-title"><span class="method">GET</span><code>/api/runtime/:id/device</code></div><input class="path" value="/runtime/example.plugin/device"></div>
-      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">Требуется X-YAM-Token</pre><button onclick="sendEndpoint(this)">Отправить</button>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">Требуется X-Luna-Token</pre><button onclick="sendEndpoint(this)">Отправить</button>
     </div>
     <div class="endpoint" data-method="GET" data-path="/runtime/example.plugin/sensors">
       <div><div class="endpoint-title"><span class="method">GET</span><code>/api/runtime/:id/sensors</code></div><input class="path" value="/runtime/example.plugin/sensors"></div>
-      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">Требуется X-YAM-Token</pre><button onclick="sendEndpoint(this)">Отправить</button>
+      <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">Требуется X-Luna-Token</pre><button onclick="sendEndpoint(this)">Отправить</button>
     </div>
     <div class="endpoint" data-method="POST" data-path="/runtime/example.plugin/led">
       <div><div class="endpoint-title"><span class="method">POST</span><code>/api/runtime/:id/led</code></div><input class="path" value="/runtime/example.plugin/led"></div>
-      <textarea class="body">{"colors":["#FF0000"]}</textarea><pre class="response">Требуется X-YAM-Token</pre><button onclick="sendEndpoint(this)">Отправить</button>
+      <textarea class="body">{"colors":["#FF0000"]}</textarea><pre class="response">Требуется X-Luna-Token</pre><button onclick="sendEndpoint(this)">Отправить</button>
     </div>
     <div class="endpoint" data-method="POST" data-path="/runtime/example.plugin/clock">
       <div><div class="endpoint-title"><span class="method">POST</span><code>/api/runtime/:id/clock</code></div><input class="path" value="/runtime/example.plugin/clock"></div>
-      <textarea class="body">{"time":"12:34","brightness":170}</textarea><pre class="response">Требуется X-YAM-Token</pre><button onclick="sendEndpoint(this)">Отправить</button>
+      <textarea class="body">{"time":"12:34","brightness":170}</textarea><pre class="response">Требуется X-Luna-Token</pre><button onclick="sendEndpoint(this)">Отправить</button>
     </div>
   </section>
 
