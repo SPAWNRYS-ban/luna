@@ -1,0 +1,14 @@
+[package]
+name = "luna-yandexmini"
+version = "0.2.0"
+edition = "2021"
+
+[[bin]]
+name = "luna-yandexmini"
+path = "station_main.rs"
+
+[dependencies]
+anyhow = "1"
+libc = "0.2"
+luna = { path = "../.." }
+

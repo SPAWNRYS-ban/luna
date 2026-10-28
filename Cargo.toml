@@ -26,3 +26,15 @@ walkdir = "2"
 zip = "2"
 tar = "0.4"
 libc = "0.2"
+
+[workspace]
+resolver = "2"
+members = [
+    ".",
+    "stations/yandexmicro",
+    "stations/yandexmini",
+    "stations/yandexmini3",
+    "stations/yandexmini_2",
+    "stations/yandexmidi",
+    "stations/yandexplum",
+]

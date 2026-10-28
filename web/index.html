@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>YAM</title>
+  <title>Luna</title>
   <style>
     body { max-width: 900px; margin: 3rem auto; font: 16px system-ui; background: #10131a; color: #e8edf7; }
     button, input, select { padding: .55rem; margin: .2rem; }
@@ -12,10 +12,13 @@
     .plugin span { flex: 1; }
     small { color: #aab; }
     #upload-status { color: #aab; }
+    textarea { width: min(100%, 34rem); min-height: 5rem; box-sizing: border-box; }
+    .row { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; }
+    .status { color: #aab; white-space: pre-wrap; }
   </style>
 </head>
 <body>
-  <h1>YAM</h1>
+  <h1>Luna</h1>
   <p id="device"></p>
   <section>
     <h2>Пакеты</h2>
@@ -24,13 +27,35 @@
   </section>
   <section>
     <h2>LED</h2>
+    <p><small>Цвета через запятую. Распределение по реальному числу LED делает Luna.</small></p>
     <input id="colors" value="#4285F4,#EA4335,#FBBC05" size="40">
-    <button onclick="setLed()">Показать</button>
-    <button onclick="turnOff()">Выключить</button>
+    <div class="row">
+      <button onclick="setLed('/led')">Ring + logo</button>
+      <button onclick="setLed('/led/ring')">Только ring</button>
+      <button id="logo-set" onclick="setLed('/led/logo')">Только logo</button>
+      <button onclick="turnOff('/led/off')">Выключить всё</button>
+      <button onclick="turnOff('/led/off/ring')">Выключить ring</button>
+      <button id="logo-off" onclick="turnOff('/led/off/logo')">Выключить logo</button>
+    </div>
+    <p class="status" id="led-status"></p>
+  </section>
+  <section>
+    <h2>Часы</h2>
+    <div class="row">
+      <label>Время <input id="clock-time" value="12:34" pattern="[0-9]{1,2}:[0-9]{2}"></label>
+      <label>Яркость <input id="clock-brightness" type="number" min="0" max="255" value="170"></label>
+      <button onclick="setClockTime()">Показать время</button>
+      <button onclick="turnOffClock()">Выключить часы</button>
+    </div>
+    <p><small>Для отдельных сегментов — JSON вида {"A0":255,"B0":255}.</small></p>
+    <textarea id="clock-segments">{"A0":255,"B0":255}</textarea><br>
+    <button onclick="setClockSegments()">Установить сегменты</button>
+    <button onclick="loadClock()">Обновить информацию</button>
+    <p class="status" id="clock-status"></p>
   </section>
   <section>
     <h2>Настройки</h2>
-    <label>Профиль <select id="profile" onchange="syncCount()"><option>mini2</option><option>micro</option><option>midi</option><option>plum</option><option>sysfs-ring</option><option>custom</option></select></label>
+    <label>Профиль <select id="profile"><option>mini2</option><option>micro</option><option>midi</option><option>plum</option><option>sysfs-ring</option><option>custom</option></select></label>
     <label>LED count <input id="count" type="number" min="1" max="128"></label>
     <label><input id="binaries" type="checkbox"> Разрешить бинарники плагинов</label>
     <label><input id="updates" type="checkbox"> Автообновление YAM из GitHub Releases</label>
@@ -48,6 +73,8 @@ const countInput = document.getElementById('count');
 const binariesInput = document.getElementById('binaries');
 const updatesInput = document.getElementById('updates');
 const colorsInput = document.getElementById('colors');
+const ledStatus = document.getElementById('led-status');
+const clockStatus = document.getElementById('clock-status');
 async function request(path, options) {
   const response = await fetch(api + path, options);
   if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || response.statusText);
@@ -70,6 +97,9 @@ async function load() {
   try {
     const [pluginData, settings, currentDevice] = await Promise.all([request('/plugins').then(r => r.json()), request('/settings').then(r => r.json()), request('/device').then(r => r.json())]);
     deviceElement.textContent = `Колонка: ${currentDevice.model} · ${currentDevice.architecture} · ${currentDevice.features.join(', ')}`;
+    const hasLogo = currentDevice.led?.has_logo === true;
+    document.getElementById('logo-set').disabled = !hasLogo;
+    document.getElementById('logo-off').disabled = !hasLogo;
     pluginsElement.innerHTML = pluginData.map(pluginRow).join('') || 'Пакетов нет';
     profileInput.value = settings.led.profile;
     countInput.value = settings.led.count;
@@ -88,18 +118,42 @@ uploadForm.onsubmit = async event => {
   uploadStatus.textContent = `Загрузка ${file.name}…`;
   try { const form = new FormData(); form.append('package', file, file.name); await request('/plugins', { method: 'POST', body: form }); uploadForm.reset(); await load(); uploadStatus.textContent = 'Установлено. Включите пакет перед запуском.'; } catch (error) { uploadStatus.textContent = ''; alert(error.message); }
 };
-function ringColors() { const list = colorsInput.value.split(',').map(c => c.trim()).filter(Boolean); return list.length ? Array.from({ length: Number(countInput.value) || list.length }, (_, i) => list[i % list.length]) : list; }
-async function setLed() { try { await request('/led', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ colors: ringColors() }) }); } catch (error) { alert(error.message); } }
-async function turnOff() { try { await request('/led/off', { method: 'POST' }); } catch (error) { alert(error.message); } }
-const ZONE_COUNTS = { mini2: 6, micro: 3, midi: 24, plum: 3 };
-function syncCount() {
-  const zones = ZONE_COUNTS[profileInput.value];
-  if (zones) countInput.value = zones;
+function colors() { return colorsInput.value.split(',').map(c => c.trim()).filter(Boolean); }
+async function setLed(path) {
+  try { await request(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ colors: colors() }) }); ledStatus.textContent = `OK: POST ${api}${path}`; }
+  catch (error) { ledStatus.textContent = `Ошибка: ${error.message}`; }
+}
+async function turnOff(path) {
+  try { await request(path, { method: 'POST' }); ledStatus.textContent = `OK: POST ${api}${path}`; }
+  catch (error) { ledStatus.textContent = `Ошибка: ${error.message}`; }
+}
+async function loadClock() {
+  try {
+    const clock = await request('/clock').then(r => r.json());
+    clockStatus.textContent = clock.available ? `Доступны сегменты: ${clock.segments.join(', ')}` : 'Часы недоступны';
+  } catch (error) { clockStatus.textContent = `Ошибка: ${error.message}`; }
+}
+async function setClockTime() {
+  try {
+    await request('/clock', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ time: document.getElementById('clock-time').value, brightness: Number(document.getElementById('clock-brightness').value) }) });
+    clockStatus.textContent = 'Время установлено';
+  } catch (error) { clockStatus.textContent = `Ошибка: ${error.message}`; }
+}
+async function setClockSegments() {
+  try {
+    const segments = JSON.parse(document.getElementById('clock-segments').value);
+    await request('/clock', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ segments }) });
+    clockStatus.textContent = 'Сегменты установлены';
+  } catch (error) { clockStatus.textContent = `Ошибка: ${error.message}`; }
+}
+async function turnOffClock() {
+  try { await request('/clock/off', { method: 'POST' }); clockStatus.textContent = 'Часы выключены'; }
+  catch (error) { clockStatus.textContent = `Ошибка: ${error.message}`; }
 }
 async function saveSettings() {
-  try { syncCount(); const settings = await request('/settings').then(r => r.json()); settings.led.profile = profileInput.value; settings.led.count = Number(countInput.value); settings.allow_plugin_binaries = binariesInput.checked; settings.updates = { ...(settings.updates || {}), enabled: updatesInput.checked }; await request('/settings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(settings) }); } catch (error) { alert(error.message); }
+  try { const settings = await request('/settings').then(r => r.json()); settings.led.profile = profileInput.value; settings.led.count = Number(countInput.value); settings.allow_plugin_binaries = binariesInput.checked; settings.updates = { ...(settings.updates || {}), enabled: updatesInput.checked }; await request('/settings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(settings) }); } catch (error) { alert(error.message); }
 }
-load();
+load().then(loadClock);
 </script>
 </body>
 </html>

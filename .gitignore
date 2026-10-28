@@ -1,1 +1,6 @@
 /target/
+/dist/
+
+# Local deployment/release helpers; do not publish these scripts.
+/tools/build-deploy.sh
+/tools/release.sh

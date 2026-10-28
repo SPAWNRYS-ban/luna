@@ -1,0 +1,13 @@
+[package]
+name = "luna-yandexmidi"
+version = "0.2.0"
+edition = "2021"
+
+[[bin]]
+name = "luna-yandexmidi"
+path = "station_main.rs"
+
+[dependencies]
+anyhow = "1"
+luna = { path = "../.." }
+
