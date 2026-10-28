@@ -11,7 +11,7 @@ function Require-Command([string]$Name) {
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) { throw "$Name is required. Install Android Platform Tools and add adb to PATH." }
 }
 function Invoke-AdbShell([string]$Command) {
-    $result = & adb -s $Serial shell $Command 2>&1
+    $result = & adb -s $Serial shell sh -c $Command 2>&1
     if ($LASTEXITCODE -ne 0) { throw "adb shell failed: $result" }
     return ($result -join [Environment]::NewLine)
 }
@@ -79,7 +79,7 @@ echo "Luna removed"
         $archMatch = (($entry.target -like 'aarch64-*' -and $arch -in @('aarch64', 'arm64')) -or ($entry.target -like 'armv7-*' -and $arch -in @('armv7', 'armv7l', 'arm')))
         $nameMatch -and $archMatch
     })
-    if ($found.Count -ne 1) { throw "Unsupported or ambiguous station. Detected: $($values -join ', ') (arch=$arch, abi=$abi)" }
+    if ($found.Count -ne 1) { throw "Unsupported or ambiguous station. Detected: $($values -join ', ') (arch=$arch, abi=$abi). Raw adb info: $info" }
     $entry = $found[0]
     $asset = $entry.asset
     Write-Host "Detected $($entry.device) ($($entry.codename)) [$arch]"
