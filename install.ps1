@@ -13,22 +13,10 @@ function Require-Command([string]$Name) {
 }
 function Invoke-AdbShell([string]$Command) {
     Log "ADB shell: $Command"
-    $job = Start-Job -ScriptBlock {
-        param($JobSerial, $JobCommand)
-        $output = & adb -s $JobSerial shell sh -c $JobCommand 2>&1
-        [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = @($output) }
-    } -ArgumentList $Serial, $Command
-    if (-not (Wait-Job $job -Timeout 10)) {
-        Stop-Job $job -ErrorAction SilentlyContinue
-        Remove-Job $job -Force -ErrorAction SilentlyContinue
-        throw "adb shell timed out after 10 seconds: $Command"
-    }
-    $payload = Receive-Job $job
-    Remove-Job $job -Force -ErrorAction SilentlyContinue
-    $result = @($payload.Output) -join [Environment]::NewLine
-    if ([int]$payload.ExitCode -ne 0) { throw "adb shell failed: $result" }
+    $result = & adb -s $Serial shell $Command 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "adb shell failed: $result" }
     Log "ADB shell complete"
-    return $result
+    return ($result -join [Environment]::NewLine)
 }
 function Invoke-AdbOptional([string]$Command) {
     try { return Invoke-AdbShell $Command } catch { Log "optional probe failed: $Command"; return "" }
@@ -82,9 +70,9 @@ echo "Luna removed"
     $unameA = Invoke-AdbOptional 'uname -a'
     $hostname = Invoke-AdbOptional 'uname -n'
     $arch = Invoke-AdbOptional 'uname -m'
-    $abi = Invoke-AdbOptional 'getprop ro.product.cpu.abi 2>/dev/null || true'
-    $model = Invoke-AdbOptional 'getprop ro.product.model 2>/dev/null || true'
-    $device = Invoke-AdbOptional 'getprop ro.product.device 2>/dev/null || true'
+    $abi = Invoke-AdbOptional 'getprop ro.product.cpu.abi'
+    $model = Invoke-AdbOptional 'getprop ro.product.model'
+    $device = Invoke-AdbOptional 'getprop ro.product.device'
     $dt = ""
     $compatible = ""
     if ($arch -eq 'arm64-v8a') { $arch = 'aarch64' }
