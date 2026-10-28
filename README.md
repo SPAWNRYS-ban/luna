@@ -6,7 +6,7 @@ Luna связывает Lua-плагины и HTTP API с реальным же�
 логика не зашита в общий gateway: каждая модель собирается отдельным crate и
 сама описывает свои LED, кнопки, часы, аудио и другие capabilities.
 
-[API reference](docs/API.md) · [Manifest](luna-manifest.json)
+[API reference](docs/API.md) · [Lua/YAM plugins](docs/PLUGINS.md) · [Manifest](luna-manifest.json)
 
 ## Быстрая установка
 

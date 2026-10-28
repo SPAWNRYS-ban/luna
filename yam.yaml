@@ -15,6 +15,8 @@ files:
   share/luna/web/: web/
 services:
   luna:
-    exec: [bin/luna, --data-dir, "${YAM_VAR}"]
+    # После добавления раскрытия ${YAM_*} в Yam сюда можно добавить --yam-root,
+    # --yam-run и --data-dir. До этого Luna определяет YAM_ROOT/YAM_RUN сама.
+    exec: [bin/luna]
     restart: always
     after: [network]

@@ -419,6 +419,25 @@ curl "$BASE/sensors"
 curl "$BASE/plugins"
 ```
 
+Плагины, установленные через YAM, возвращаются с `source: "yam"` и полем
+`package` (`namespace/name`). Каталог таких плагинов принадлежит YAM: кнопка
+удаления Luna для них недоступна, удаление выполняется командой
+`yam remove namespace/name`.
+
+### `GET /api/plugins/sources`
+
+Показывает обнаруженные каталоги Luna и YAM:
+
+```sh
+curl "$BASE/plugins/sources"
+```
+
+### `POST /api/plugins/rescan`
+
+Повторно сканирует YAM-каталог и возвращает актуальный список плагинов. Этот
+endpoint безопасен для standalone-установки: если YAM не обнаружен, список
+остаётся локальным.
+
 ### `POST /api/plugins`
 
 Установка локального пакета. Используется multipart-поле `package`:

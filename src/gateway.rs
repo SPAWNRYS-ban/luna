@@ -9,6 +9,7 @@ use axum::{
 use clap::{Parser, Subcommand};
 use flate2::read::GzDecoder;
 use mlua::{HookTriggers, Lua, LuaOptions, LuaSerdeExt, StdLib, VmState};
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -39,6 +40,10 @@ struct Args {
     data_dir: PathBuf,
     #[arg(long)]
     model: Option<String>,
+    #[arg(long)]
+    yam_root: Option<PathBuf>,
+    #[arg(long)]
+    yam_run: Option<PathBuf>,
     #[command(subcommand)]
     command: Option<RuntimeCommand>,
 }
@@ -505,6 +510,8 @@ struct PluginInfo {
     running: bool,
     compatible: bool,
     incompatibility: Option<String>,
+    source: PluginSource,
+    package: Option<String>,
 }
 #[derive(Clone)]
 struct App {
@@ -797,12 +804,53 @@ fn parse_pattern(s: &str) -> Result<(bool, Vec<Frame>)> {
 
 struct PluginManager {
     root: PathBuf,
+    yam_root: Option<PathBuf>,
+    yam_run: Option<PathBuf>,
     enabled: HashSet<String>,
     service_enabled: HashSet<String>,
     running: HashMap<String, Arc<AtomicBool>>,
 }
+fn yam_root_from_executable(executable: &Path) -> Option<PathBuf> {
+    let bin = executable.parent()?;
+    if bin.file_name()? != "bin" || bin.parent()?.parent()?.file_name()? != "luna" {
+        return None;
+    }
+    let yam = bin.parent()?.parent()?.parent()?;
+    if yam.file_name()? != "yam" || yam.parent()?.file_name()? != "pkgs" {
+        return None;
+    }
+    yam.parent()?.parent().map(Path::to_path_buf)
+}
+fn resolve_yam_paths(args: &Args) -> (Option<PathBuf>, Option<PathBuf>) {
+    let root = args
+        .yam_root
+        .clone()
+        .or_else(|| std::env::var_os("YAM_ROOT").map(PathBuf::from))
+        .or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|path| yam_root_from_executable(&path))
+        });
+    let run = args
+        .yam_run
+        .clone()
+        .or_else(|| std::env::var_os("YAM_RUN").map(PathBuf::from));
+    (root, run)
+}
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum PluginSource {
+    Local,
+    Yam,
+}
+#[derive(Debug, Clone)]
+struct PluginLocation {
+    root: PathBuf,
+    source: PluginSource,
+    package: Option<String>,
+}
 impl PluginManager {
-    fn new(root: PathBuf) -> Result<Self> {
+    fn new(root: PathBuf, yam_root: Option<PathBuf>, yam_run: Option<PathBuf>) -> Result<Self> {
         fs::create_dir_all(&root)?;
         let enabled = match fs::read_to_string(root.join("enabled.json")) {
             Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|error| {
@@ -838,6 +886,8 @@ impl PluginManager {
         };
         Ok(Self {
             root,
+            yam_root,
+            yam_run,
             enabled,
             service_enabled,
             running: HashMap::new(),
@@ -853,39 +903,161 @@ impl PluginManager {
             &serde_json::to_vec_pretty(&self.service_enabled)?,
         )
     }
-    fn list(&self, device: &DeviceProfile) -> Result<Vec<PluginInfo>> {
-        let mut out = vec![];
-        for e in fs::read_dir(&self.root)? {
-            let e = e?;
-            if !e.file_type()?.is_dir() {
-                continue;
-            };
-            if e.file_name().to_string_lossy().starts_with("user_lua_") {
-                continue;
+    fn yam_plugins_root(&self) -> Option<PathBuf> {
+        self.yam_root
+            .as_ref()
+            .map(|root| root.join("share/luna/plugins"))
+    }
+    fn state_root(&self, id: &str) -> PathBuf {
+        self.root.join("plugin-state").join(id)
+    }
+    fn yam_location(&self, id: &str) -> Option<PluginLocation> {
+        let root = self.yam_plugins_root()?;
+        let path = root.join(id);
+        (path.is_dir() && validate_yam_id(id).is_ok()).then_some(PluginLocation {
+            root: path,
+            source: PluginSource::Yam,
+            package: Some(id.replace('.', "/")),
+        })
+    }
+    fn location(&self, id: &str) -> Result<PluginLocation> {
+        validate_id_or_yam(id)?;
+        if let Some(location) = self.yam_location(id) {
+            return Ok(location);
+        }
+        let root = self.root.join(id);
+        if !root.is_dir() {
+            bail!("plugin not found")
+        }
+        Ok(PluginLocation {
+            root,
+            source: PluginSource::Local,
+            package: None,
+        })
+    }
+    fn with_yam_lock<T>(&self, operation: impl FnOnce() -> Result<T>) -> Result<T> {
+        let Some(run) = &self.yam_run else {
+            return operation();
+        };
+        let lock_path = run.join("yam.lock");
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .open(&lock_path)
+            .with_context(|| format!("open YAM lock {}", lock_path.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let mut locked = false;
+            for _ in 0..30 {
+                if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } == 0 {
+                    locked = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_secs(1));
             }
-            let p = e.path().join("plugin.toml");
-            if let Ok(x) = fs::read_to_string(p) {
-                if let Ok(manifest) = toml::from_str::<Manifest>(&x) {
-                    let reason = compatibility_error(&manifest, device);
-                    out.push(PluginInfo {
-                        directory: e.path(),
-                        enabled: self.enabled.contains(&manifest.id),
-                        service_enabled: self.service_enabled.contains(&manifest.id),
-                        running: self.running.contains_key(&manifest.id),
-                        compatible: reason.is_none(),
-                        incompatibility: reason,
-                        manifest,
-                    })
+            if !locked {
+                bail!("YAM lock is busy")
+            }
+            let result = operation();
+            unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+            return result;
+        }
+        #[cfg(not(unix))]
+        operation()
+    }
+    fn list(&self, device: &DeviceProfile) -> Result<Vec<PluginInfo>> {
+        self.with_yam_lock(|| {
+            let mut out = vec![];
+            let mut locations = Vec::new();
+            for e in fs::read_dir(&self.root)? {
+                let e = e?;
+                if e.file_type()?.is_dir() && !e.file_name().to_string_lossy().starts_with("user_lua_") {
+                    locations.push(PluginLocation { root: e.path(), source: PluginSource::Local, package: None });
                 }
             }
+            if let Some(root) = self.yam_plugins_root() {
+                if root.is_dir() {
+                    for e in fs::read_dir(root)? {
+                        let e = e?;
+                        let id = e.file_name().to_string_lossy().to_string();
+                        if !e.file_type()?.is_dir() || validate_yam_id(&id).is_err() {
+                            tracing::warn!(path=%e.path().display(), "ignoring invalid YAM plugin directory");
+                            continue;
+                        }
+                        locations.push(PluginLocation { root: e.path(), source: PluginSource::Yam, package: Some(id.replace('.', "/")) });
+                    }
+                }
+            }
+            for location in locations {
+                let p = location.root.join("plugin.toml");
+                let Ok(x) = fs::read_to_string(&p) else {
+                    tracing::warn!(path=%p.display(), "ignoring plugin without plugin.toml");
+                    continue;
+                };
+                let Ok(manifest) = toml::from_str::<Manifest>(&x) else {
+                    tracing::warn!(path=%p.display(), "ignoring plugin with invalid plugin.toml");
+                    continue;
+                };
+                if location.source == PluginSource::Yam && manifest.id != location.root.file_name().unwrap_or_default().to_string_lossy() {
+                    tracing::warn!(id=%manifest.id, path=%location.root.display(), "ignoring YAM plugin with mismatched id");
+                    continue;
+                }
+                let reason = compatibility_error(&manifest, device);
+                let reason = if location.source == PluginSource::Yam && manifest.launch.kind == LaunchKind::Binary {
+                    Some("binary-плагины из YAM пока не поддерживаются".into())
+                } else { reason };
+                out.push(PluginInfo {
+                    directory: location.root,
+                    enabled: self.enabled.contains(&manifest.id),
+                    service_enabled: self.service_enabled.contains(&manifest.id),
+                    running: self.running.contains_key(&manifest.id),
+                    compatible: reason.is_none(),
+                    incompatibility: reason,
+                    source: location.source,
+                    package: location.package,
+                    manifest,
+                });
+            }
+            Ok(out)
+        })
+    }
+    fn rescan(&mut self, device: &DeviceProfile) -> Result<Vec<PluginInfo>> {
+        let visible = self.list(device)?;
+        let visible_ids: HashSet<_> = visible
+            .iter()
+            .map(|plugin| plugin.manifest.id.as_str())
+            .collect();
+        let removed: Vec<_> = self
+            .enabled
+            .iter()
+            .filter(|id| id.contains('.') && !visible_ids.contains(id.as_str()))
+            .cloned()
+            .collect();
+        let mut changed = false;
+        for id in removed {
+            self.enabled.remove(&id);
+            self.service_enabled.remove(&id);
+            if let Some(token) = self.running.remove(&id) {
+                token.store(true, Ordering::Relaxed);
+            }
+            changed = true;
+            tracing::info!(plugin=%id, "YAM plugin disappeared; stopped and removed from enabled state");
         }
-        Ok(out)
+        if changed {
+            self.save()?;
+        }
+        Ok(visible)
     }
     fn manifest(&self, id: &str) -> Result<Manifest> {
-        validate_id(id)?;
+        let location = self.location(id)?;
         Ok(toml::from_str(&fs::read_to_string(
-            self.root.join(id).join("plugin.toml"),
+            location.root.join("plugin.toml"),
         )?)?)
+    }
+    fn location_and_manifest(&self, id: &str) -> Result<(PluginLocation, Manifest)> {
+        let location = self.location(id)?;
+        let manifest = toml::from_str(&fs::read_to_string(location.root.join("plugin.toml"))?)?;
+        Ok((location, manifest))
     }
     fn install(&mut self, bytes: &[u8]) -> Result<Manifest> {
         let stage = self.root.join(format!(".install-{}", Uuid::new_v4()));
@@ -908,6 +1080,12 @@ impl PluginManager {
         let manifest_text = fs::read_to_string(stage.join("plugin.toml"))
             .context(".yap must contain root plugin.toml")?;
         let m: Manifest = toml::from_str(&manifest_text)?;
+        if m.id.contains('.') && self.yam_location(&m.id).is_some() {
+            bail!(
+                "плагин установлен через YAM, удаляйте его через `yam remove {}`",
+                m.id.replace('.', "/")
+            )
+        }
         validate_id(&m.id)?;
         safe_relative(&m.entry)?;
         safe_relative(m.launch.path(&m))?;
@@ -949,8 +1127,14 @@ impl PluginManager {
         Ok(m)
     }
     fn remove(&mut self, id: &str) -> Result<()> {
-        validate_id(id)?;
-        let p = self.root.join(id);
+        let location = self.location(id)?;
+        if location.source == PluginSource::Yam {
+            bail!(
+                "плагин установлен через YAM, удаляйте его через `yam remove {}`",
+                location.package.unwrap_or_else(|| id.replace('.', "/"))
+            )
+        }
+        let p = location.root;
         if !p.exists() {
             bail!("plugin not found")
         };
@@ -2265,6 +2449,37 @@ fn validate_id(s: &str) -> Result<()> {
     };
     Ok(())
 }
+fn validate_yam_id(s: &str) -> Result<()> {
+    let mut parts = s.split('.');
+    let Some(namespace) = parts.next() else {
+        bail!("invalid YAM plugin id")
+    };
+    let Some(name) = parts.next() else {
+        bail!("invalid YAM plugin id")
+    };
+    if parts.next().is_some()
+        || namespace.is_empty()
+        || name.is_empty()
+        || namespace.len() > 64
+        || name.len() > 64
+        || !namespace
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        bail!("invalid YAM plugin id")
+    }
+    Ok(())
+}
+fn validate_id_or_yam(s: &str) -> Result<()> {
+    if s.contains('.') {
+        validate_yam_id(s)
+    } else {
+        validate_id(s)
+    }
+}
 fn safe_relative(s: &str) -> Result<()> {
     let p = Path::new(s);
     if p.is_absolute() || p.components().any(|c| matches!(c, Component::ParentDir)) {
@@ -2375,13 +2590,13 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
         if !p.enabled.contains(&id) {
             bail!("plugin is disabled")
         };
-        let m = p.manifest(&id)?;
+        let (location, m) = p.location_and_manifest(&id)?;
         if let Some(reason) = compatibility_error(&m, &device) {
             bail!("plugin is incompatible: {reason}")
         };
         (
             m,
-            p.root.join(&id),
+            location.root,
             app.settings.lock().await.allow_plugin_binaries,
         )
     };
@@ -3169,12 +3384,15 @@ async fn run_binary(
     cancelled: Arc<AtomicBool>,
 ) -> Result<()> {
     let device = app.device.lock().await.clone();
-    let (manifest, root) = {
+    let (manifest, root, state_root) = {
         let plugins = app.plugins.lock().await;
         if !plugins.enabled.contains(&id) {
             bail!("package is disabled")
         }
-        let manifest = plugins.manifest(&id)?;
+        let (location, manifest) = plugins.location_and_manifest(&id)?;
+        if location.source == PluginSource::Yam {
+            bail!("binary-плагины из YAM пока не поддерживаются")
+        }
         if let Some(reason) = compatibility_error(&manifest, &device) {
             bail!("package is incompatible: {reason}")
         }
@@ -3185,7 +3403,7 @@ async fn run_binary(
         {
             bail!("binary packages require the exec permission")
         }
-        (manifest, plugins.root.join(&id))
+        (manifest, location.root, plugins.state_root(&id))
     };
     let token = Uuid::new_v4().to_string();
     app.runtime_tokens
@@ -3197,8 +3415,9 @@ async fn run_binary(
     let result = task::spawn_blocking(move || -> Result<()> {
         let executable = manifest.launch.path(&manifest).to_string();
         safe_relative(&executable)?;
+        fs::create_dir_all(&state_root)?;
         let log = Arc::new(std::sync::Mutex::new(RotatingLog::open(
-            root.join("runtime.log"),
+            state_root.join("runtime.log"),
         )?));
         let (interpreter, program) = launch_program(&manifest, &root, &executable);
         let mut command = match interpreter {
@@ -3575,6 +3794,26 @@ async fn list(State(a): State<App>) -> Result<Json<Vec<PluginInfo>>, ApiError> {
     let d = a.device.lock().await.clone();
     Ok(Json(a.plugins.lock().await.list(&d)?))
 }
+#[derive(Debug, Serialize)]
+struct PluginSources {
+    local_root: PathBuf,
+    yam_root: Option<PathBuf>,
+    yam_run: Option<PathBuf>,
+    yam_enabled: bool,
+}
+async fn plugin_sources(State(a): State<App>) -> Json<PluginSources> {
+    let plugins = a.plugins.lock().await;
+    Json(PluginSources {
+        local_root: plugins.root.clone(),
+        yam_root: plugins.yam_plugins_root(),
+        yam_run: plugins.yam_run.clone(),
+        yam_enabled: plugins.yam_root.is_some(),
+    })
+}
+async fn rescan_plugins(State(a): State<App>) -> Result<Json<Vec<PluginInfo>>, ApiError> {
+    let device = a.device.lock().await.clone();
+    Ok(Json(a.plugins.lock().await.rescan(&device)?))
+}
 async fn install(State(a): State<App>, mut form: Multipart) -> Result<Json<Manifest>, ApiError> {
     while let Some(f) = form.next_field().await? {
         if f.name() == Some("package") {
@@ -3810,7 +4049,7 @@ async fn package_logs(
     AxumPath(id): AxumPath<String>,
 ) -> Result<String, ApiError> {
     validate_id(&id)?;
-    let path = a.plugins.lock().await.root.join(id).join("runtime.log");
+    let path = a.plugins.lock().await.state_root(&id).join("runtime.log");
     Ok(fs::read_to_string(path).unwrap_or_default())
 }
 async fn runtime_permission(
@@ -4360,6 +4599,12 @@ pub async fn run_with_station(station: Option<StationSpec>) -> Result<()> {
         return Ok(());
     }
     fs::create_dir_all(&args.data_dir)?;
+    let (yam_root, yam_run) = resolve_yam_paths(&args);
+    if yam_root.is_some() && yam_run.is_none() {
+        tracing::warn!(
+            "YAM_ROOT detected but YAM_RUN is unavailable; YAM plugin reads are unlocked"
+        );
+    }
     let settings_path = args.data_dir.join("settings.toml");
     // A broken settings.toml must not silently fall back to defaults: they
     // re-enable the web API and auto-updates.
@@ -4445,6 +4690,8 @@ pub async fn run_with_station(station: Option<StationSpec>) -> Result<()> {
         clock,
         plugins: Arc::new(Mutex::new(PluginManager::new(
             args.data_dir.join("plugins"),
+            yam_root,
+            yam_run,
         )?)),
         runtime_tokens: Arc::new(Mutex::new(HashMap::new())),
         runtime_api_url: crate::updater::runtime_api_url(&args.listen)?,
@@ -4475,6 +4722,49 @@ pub async fn run_with_station(station: Option<StationSpec>) -> Result<()> {
             tracing::error!(package = %id, %error, "service package failed to start");
         }
     }
+    let rescan_app = app.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            let device = rescan_app.device.lock().await.clone();
+            if let Err(error) = rescan_app.plugins.lock().await.rescan(&device) {
+                tracing::warn!(%error, "YAM plugin rescan failed");
+            }
+        }
+    });
+    if let Some(yam_plugins_root) = app.plugins.lock().await.yam_plugins_root() {
+        if yam_plugins_root.is_dir() {
+            let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+            match notify::recommended_watcher(move |_| {
+                let _ = events_tx.send(());
+            }) {
+                Ok(mut watcher) => {
+                    if watcher
+                        .watch(&yam_plugins_root, RecursiveMode::Recursive)
+                        .is_ok()
+                    {
+                        let watch_app = app.clone();
+                        tokio::spawn(async move {
+                            let _watcher: RecommendedWatcher = watcher;
+                            while events_rx.recv().await.is_some() {
+                                tokio::time::sleep(Duration::from_secs(1)).await;
+                                while events_rx.try_recv().is_ok() {}
+                                let device = watch_app.device.lock().await.clone();
+                                if let Err(error) = watch_app.plugins.lock().await.rescan(&device) {
+                                    tracing::warn!(%error, "YAM plugin event rescan failed");
+                                }
+                            }
+                        });
+                    } else {
+                        tracing::warn!(path=%yam_plugins_root.display(), "cannot watch YAM plugin directory; using periodic rescan");
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "cannot initialize YAM plugin watcher; using periodic rescan")
+                }
+            }
+        }
+    }
     let web = app.settings.lock().await.web.clone();
     if web.ui && !web.api {
         bail!("web.ui requires web.api")
@@ -4490,6 +4780,8 @@ pub async fn run_with_station(station: Option<StationSpec>) -> Result<()> {
     if web.api {
         router = router
             .route("/api/plugins", get(list).post(install))
+            .route("/api/plugins/sources", get(plugin_sources))
+            .route("/api/plugins/rescan", post(rescan_plugins))
             .route("/api/plugins/registry", post(install_registry))
             .route("/api/plugins/:id", delete(remove))
             .route("/api/plugins/:id/toggle", post(toggle))
@@ -4687,5 +4979,66 @@ mod tests {
             devices,
             vec![("mute".into(), PathBuf::from("/dev/input/event2"))]
         );
+    }
+
+    #[test]
+    fn yam_ids_are_strictly_namespaced() {
+        assert!(validate_yam_id("vasya.clock").is_ok());
+        assert!(validate_yam_id("vasya.clock.extra").is_err());
+        assert!(validate_yam_id("Vasya.clock").is_err());
+        assert!(validate_id("vasya.clock").is_err());
+    }
+
+    #[test]
+    fn yam_root_is_detected_from_packaged_executable_path() {
+        assert_eq!(
+            yam_root_from_executable(Path::new("/data/pkgs/yam/luna/0.3.0/bin/luna")),
+            Some(PathBuf::from("/data"))
+        );
+        assert!(yam_root_from_executable(Path::new("/data/bin/luna")).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn yam_plugin_is_listed_through_share_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!("luna-yam-test-{}", Uuid::new_v4()));
+        let yam_root = root.join("yam");
+        let package = yam_root.join("pkgs/vasya/clock/1.0.0/share/luna/plugins/vasya.clock");
+        let shared = yam_root.join("share/luna/plugins/vasya.clock");
+        fs::create_dir_all(&package).unwrap();
+        fs::create_dir_all(shared.parent().unwrap()).unwrap();
+        fs::write(
+            package.join("plugin.toml"),
+            "id='vasya.clock'\nname='Clock'\nversion='1.0.0'\nentry='main.lua'\n",
+        )
+        .unwrap();
+        fs::write(package.join("main.lua"), "return 1").unwrap();
+        fs::create_dir(&shared).unwrap();
+        symlink(package.join("plugin.toml"), shared.join("plugin.toml")).unwrap();
+        symlink(package.join("main.lua"), shared.join("main.lua")).unwrap();
+
+        let manager = PluginManager::new(root.join("data/plugins"), Some(yam_root), None).unwrap();
+        let device = DeviceProfile {
+            model: "test".into(),
+            architecture: "aarch64".into(),
+            features: vec![],
+            source: "test".into(),
+            led: LedTopology::default(),
+        };
+        let plugins = manager.list(&device).unwrap();
+        assert_eq!(plugins.len(), 1);
+        assert_eq!(plugins[0].manifest.id, "vasya.clock");
+        assert_eq!(plugins[0].source, PluginSource::Yam);
+        assert_eq!(
+            fs::read_to_string(plugins[0].directory.join("main.lua")).unwrap(),
+            "return 1"
+        );
+        assert_eq!(
+            manager.state_root("vasya.clock"),
+            root.join("data/plugins/plugin-state/vasya.clock")
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 }
