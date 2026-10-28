@@ -551,7 +551,7 @@ if alice.led.is_available() then
   alice.led.set({"#00ff00"})
 end
 
-if alice.clock.is_available() then
+if device.has_clock then
   alice.clock.time("12:34", 170)
 end
 

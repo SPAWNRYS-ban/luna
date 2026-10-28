@@ -3357,11 +3357,25 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
         lua_device.set("ring_count", device.led.ring_count)?;
         lua_device.set("has_logo", device.led.has_logo)?;
         lua_device.set("logo_count", device.led.logo_count)?;
+        lua_device.set(
+            "has_clock",
+            device
+                .features
+                .iter()
+                .any(|feature| feature == "display.clock.segment.v1"),
+        )?;
         lua_device.set("room", room)?;
         lua_device.set("HasRing", device.led.ring_count > 0)?;
         lua_device.set("RingCount", device.led.ring_count)?;
         lua_device.set("HasLogo", device.led.has_logo)?;
         lua_device.set("LogoCount", device.led.logo_count)?;
+        lua_device.set(
+            "HasClock",
+            device
+                .features
+                .iter()
+                .any(|feature| feature == "display.clock.segment.v1"),
+        )?;
         let lua_features = lua.create_table()?;
         for (i, feature) in device.features.iter().enumerate() {
             lua_features.set(i + 1, feature.as_str())?;

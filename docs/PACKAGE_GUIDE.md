@@ -116,18 +116,19 @@ device.has_ring
 device.ring_count
 device.has_logo
 device.logo_count
+device.has_clock
 device.features
 device.room
 ```
 
 Есть и совместимые PascalCase-имена: `device.HasRing`, `device.RingCount`,
-`device.HasLogo`, `device.LogoCount`.
+`device.HasLogo`, `device.LogoCount`, `device.HasClock`.
 
 Проверка `is_available()` нужна всегда, если capability может отсутствовать на
 части станций:
 
 ```lua
-if alice.clock.is_available() then
+if device.has_clock then
   alice.clock.time("12:34", 180)
 end
 
@@ -165,7 +166,7 @@ Luna сама равномерно распределяет переданные
 ### Часы, input и сенсоры
 
 ```lua
-if alice.clock.is_available() then
+if device.has_clock then
   alice.clock.time("12:34", 200)
 end
 
