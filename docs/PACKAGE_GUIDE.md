@@ -89,14 +89,6 @@ features = ["led.ring.rgb"]
 | `permissions` | Явный список разрешённых API |
 | `[compatibility]` | Требования к модели или capability станции |
 
-Пример совместимости только с Mini 3:
-
-```toml
-[compatibility]
-models = ["yandexmini3"]
-features = ["input.evdev"]
-```
-
 Если capability нет, Luna покажет пакет как несовместимый. Не копируйте в
 пакет sysfs-пути, I²C-адреса или названия устройств — это ломает переносимость.
 
