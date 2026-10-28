@@ -21,7 +21,7 @@ function Compact([string]$Value) {
     return (($value.ToLowerInvariant() -replace '[-_][a-z0-9]{4}$', '') -replace '[^a-z0-9]', '')
 }
 function Read-Marker([string]$Text, [string]$Name) {
-    $match = [regex]::Match($Text, "__LUNA_${Name}__(.*?)(?=__LUNA_|$)", [Text.RegularExpressions.RegexOptions]::Singleline)
+    $match = [regex]::Match($Text, "(?ms)^LUNA_${Name}\r?\n(.*?)(?=\r?\nLUNA_|$)")
     return $match.Groups[1].Value.Trim([char]13, [char]10, [char]0, [char]32)
 }
 Require-Command "adb"
@@ -62,7 +62,7 @@ echo "Luna removed"
     Invoke-WebRequest "$url/manifest.json" -OutFile "$temp/manifest.json" -UseBasicParsing
     Invoke-WebRequest "$url/SHA256SUMS" -OutFile "$temp/SHA256SUMS" -UseBasicParsing
     $manifest = Get-Content "$temp/manifest.json" -Raw | ConvertFrom-Json
-    $info = Invoke-AdbShell 'echo "__LUNA_UNAME_A__"; uname -a; echo "__LUNA_HOSTNAME__"; uname -n; echo "__LUNA_ARCH__"; uname -m; echo "__LUNA_ABI__"; (getprop ro.product.cpu.abi 2>/dev/null || true); echo "__LUNA_MODEL__"; (getprop ro.product.model 2>/dev/null || true); echo "__LUNA_DEVICE__"; (getprop ro.product.device 2>/dev/null || true); echo "__LUNA_DT__"; (cat /proc/device-tree/model 2>/dev/null || true); echo "__LUNA_COMPAT__"; (cat /proc/device-tree/compatible 2>/dev/null | tr "\000" "\n" || true)'
+    $info = Invoke-AdbShell 'echo LUNA_UNAME_A; uname -a; echo LUNA_HOSTNAME; uname -n; echo LUNA_ARCH; uname -m; echo LUNA_ABI; (getprop ro.product.cpu.abi 2>/dev/null || true); echo LUNA_MODEL; (getprop ro.product.model 2>/dev/null || true); echo LUNA_DEVICE; (getprop ro.product.device 2>/dev/null || true); echo LUNA_DT; (cat /proc/device-tree/model 2>/dev/null || true); echo LUNA_COMPAT; (cat /proc/device-tree/compatible 2>/dev/null | tr "\000" "\n" || true)'
     $unameA = Read-Marker $info 'UNAME_A'
     $hostname = Read-Marker $info 'HOSTNAME'
     $arch = Read-Marker $info 'ARCH'

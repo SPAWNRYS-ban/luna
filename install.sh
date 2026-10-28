@@ -42,8 +42,8 @@ adb -s "$SERIAL" get-state | grep -qx device || { echo "ADB station is offline" 
 
 download "$URL/SHA256SUMS" "$TMP/SHA256SUMS"
 download "$URL/manifest.json" "$TMP/manifest.json"
-INFO=$(adb -s "$SERIAL" shell 'printf "__LUNA_UNAME_A__\n"; uname -a; printf "__LUNA_HOSTNAME__\n"; uname -n; printf "__LUNA_ARCH__\n"; uname -m; printf "__LUNA_MODEL__\n"; (getprop ro.product.model 2>/dev/null || true); printf "__LUNA_DEVICE__\n"; (getprop ro.product.device 2>/dev/null || true); printf "__LUNA_DT__\n"; (cat /proc/device-tree/model 2>/dev/null || true); printf "__LUNA_COMPAT__\n"; (cat /proc/device-tree/compatible 2>/dev/null | tr "\000" "\n" || true)' | tr -d '\r\000')
-marker_value() { printf '%s\n' "$INFO" | awk -v marker="__$1__" '$0 == marker {getline; print; exit}'; }
+INFO=$(adb -s "$SERIAL" shell 'echo LUNA_UNAME_A; uname -a; echo LUNA_HOSTNAME; uname -n; echo LUNA_ARCH; uname -m; echo LUNA_MODEL; (getprop ro.product.model 2>/dev/null || true); echo LUNA_DEVICE; (getprop ro.product.device 2>/dev/null || true); echo LUNA_DT; (cat /proc/device-tree/model 2>/dev/null || true); echo LUNA_COMPAT; (cat /proc/device-tree/compatible 2>/dev/null | tr "\000" "\n" || true)' | tr -d '\r\000')
+marker_value() { printf '%s\n' "$INFO" | awk -v marker="$1" '$0 == marker {getline; print; exit}'; }
 ARCH=$(marker_value LUNA_ARCH)
 CANDIDATES=$(printf '%s\n' "$(marker_value LUNA_UNAME_A)" "$(marker_value LUNA_HOSTNAME)" "$(marker_value LUNA_MODEL)" "$(marker_value LUNA_DEVICE)" "$(marker_value LUNA_DT)" "$(marker_value LUNA_COMPAT)" | sed '/^$/d')
 RECORD=$(python3 - "$TMP/manifest.json" "$CANDIDATES" <<'PY'
