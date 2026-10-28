@@ -66,6 +66,24 @@ ADB_SERIAL=<serial> sh install.sh
 sh install.sh v0.2.0
 ```
 
+Для Windows есть нативный PowerShell-установщик. Нужны только Android
+Platform Tools (`adb`) и включённая отладка на станции — WSL, Python и YAM не
+требуются:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\install.ps1
+.\install.ps1 -Serial <serial>
+.\install.ps1 -Version v0.2.0
+```
+
+При нескольких станциях установщик покажет интерактивный выбор. Удаление
+установленной Luna:
+
+```powershell
+.\install.ps1 -Serial <serial> -Uninstall
+```
+
 ## Сборка
 
 Обычная сборка host-бинарника:
