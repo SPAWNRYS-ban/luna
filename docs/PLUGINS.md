@@ -25,10 +25,12 @@ version: 1.0.0
 license: MIT
 description: Часы на кольце
 targets: [any]
-depends: [yam/luna ^0.3]
 files:
   share/luna/plugins/vasya.clock/: plugin/
 ```
+
+Текущая версия Yam не поддерживает поле `depends`, поэтому Luna устанавливается
+отдельно до установки плагина.
 
 `plugin/plugin.toml`:
 
