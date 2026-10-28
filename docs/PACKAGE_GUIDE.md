@@ -102,15 +102,16 @@ features = ["input.evdev"]
 
 ## 4. Напишите Lua-код
 
-Минимальный пример:
+Минимальный пример строится от capability: сначала проверяем, есть ли нужная
+зона, и только потом вызываем её API.
 
 ```lua
-if not device.has_ring then
-  return
+if device.has_ring and alice.led.set.ring.is_available() then
+  alice.led.set.ring({"#00aaff"})
 end
 
-if alice.led.set.ring.is_available() then
-  alice.led.set.ring({"#00aaff"})
+if device.has_logo and alice.led.set.logo.is_available() then
+  alice.led.set.logo({"#ffffff"})
 end
 ```
 
@@ -149,18 +150,21 @@ permission тоже должен быть объявлен.
 ### LED
 
 ```lua
--- Все зоны, доступные станции
-alice.led.set({"#ff0000", "#0000ff"})
+if alice.led.is_available() then
+  alice.led.set({"#ff0000", "#0000ff"})
+end
 
--- Только ring
-alice.led.set.ring({"#00ff00"})
+if device.has_ring and alice.led.set.ring.is_available() then
+  alice.led.set.ring({"#00ff00"})
+end
 
--- Logo есть у станций Luna
-alice.led.set.logo({"#ffffff"})
+if device.has_logo and alice.led.set.logo.is_available() then
+  alice.led.set.logo({"#ffffff"})
+end
 
-alice.led.off()
-alice.led.off.ring()
-alice.led.off.logo()
+if alice.led.off.is_available() then
+  alice.led.off()
+end
 ```
 
 Luna сама равномерно распределяет переданные цвета по физическим LED. Пакет не
