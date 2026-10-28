@@ -91,4 +91,11 @@ impl LedBackend for Driver {
             .map_err(|_| anyhow::anyhow!("unexpected Yandex Mini LED frame length"))?;
         self.show(frame)
     }
+
+    fn show_logo(&self, frame: &[u8]) -> Result<()> {
+        let frame: &[u8; CHANNEL_COUNT] = frame
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("unexpected Yandex Mini logo frame length"))?;
+        self.show(frame)
+    }
 }

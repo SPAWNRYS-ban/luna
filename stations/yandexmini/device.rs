@@ -6,8 +6,8 @@ mod microphone;
 use luna::{LedTopology, StationSpec};
 
 const CAPABILITIES: &[&str] = &[
-    "led.ring.rgb",
-    "led.ring.6",
+    "led.logo.rgb",
+    "led.logo.6",
     "led.pattern.v1",
     "microphone.capture",
 ];
@@ -18,7 +18,8 @@ pub fn spec() -> StationSpec {
         led_profile: "mini1",
         led_count: 6,
         led_topology: LedTopology {
-            ring_count: 6,
+            has_logo: true,
+            logo_count: 6,
             ..LedTopology::default()
         },
         color_order: luna::ColorOrder::Bgr,

@@ -539,9 +539,17 @@ fn frame_delay() -> u64 {
 
 impl Led {
     async fn draw(&self, colors: Vec<String>) -> Result<()> {
-        self.draw_ring(colors.clone()).await?;
+        let mut drawn = false;
+        if self.ring_count().await > 0 {
+            self.draw_ring(colors.clone()).await?;
+            drawn = true;
+        }
         if self.topology.has_logo {
             self.draw_logo(colors).await?;
+            drawn = true;
+        }
+        if !drawn {
+            bail!("no LED zone is available")
         }
         Ok(())
     }
@@ -593,7 +601,9 @@ impl Led {
     async fn off(&self) -> Result<()> {
         let c = self.settings.lock().await.clone();
         if self.backend.is_some() {
-            self.off_zone(LedZone::Ring).await?;
+            if self.ring_count().await > 0 {
+                self.off_zone(LedZone::Ring).await?;
+            }
             if self.topology.has_logo {
                 self.off_zone(LedZone::Logo).await?;
             }
