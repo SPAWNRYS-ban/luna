@@ -68,28 +68,17 @@ echo "Luna removed"
     $manifest = Get-Content "$temp/manifest.json" -Raw | ConvertFrom-Json
     Log "Detecting station"
     $hostname = Invoke-AdbShell 'uname -n'
-    $values = @($hostname.Trim()) | Where-Object { $_ }
-    $ids = @($values | ForEach-Object { Compact $_ })
+    $hostname = $hostname.Trim()
     $found = @()
     foreach ($entry in @($manifest.devices)) {
-        $aliases = @()
         foreach ($modelAlias in @($entry.models)) {
-            if (-not [string]::IsNullOrWhiteSpace([string]$modelAlias)) { $aliases += Compact ([string]$modelAlias) }
-        }
-        if ($aliases.Count -eq 0) {
-            foreach ($fallbackAlias in @($entry.device, $entry.codename)) {
-                if (-not [string]::IsNullOrWhiteSpace([string]$fallbackAlias)) { $aliases += Compact ([string]$fallbackAlias) }
+            if ([string]$modelAlias -ieq $hostname) {
+                $found += $entry
+                break
             }
         }
-        $nameMatch = $false
-        foreach ($alias in $aliases) {
-            foreach ($id in $ids) {
-                if ($alias -eq $id -or $alias.Contains($id) -or $id.Contains($alias)) { $nameMatch = $true }
-            }
-        }
-        if ($nameMatch) { $found += $entry }
     }
-    if ($found.Count -ne 1) { throw "Unsupported or ambiguous station. Detected: $($values -join ', ')" }
+    if ($found.Count -ne 1) { throw "Unsupported or ambiguous station. Detected: $hostname" }
     $entry = $found[0]
     $asset = $entry.asset
     Log "Detected $($entry.device) ($($entry.codename)) from hostname $hostname"
