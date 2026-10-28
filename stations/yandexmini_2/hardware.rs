@@ -1,93 +1,40 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use luna::LedBackend;
-use std::{fs::File, os::fd::AsRawFd};
+use std::{fs, path::PathBuf};
 
 const CHANNEL_COUNT: usize = 18;
 
 pub fn create_led_backend() -> Result<Box<dyn LedBackend>> {
-    Ok(Box::new(Driver::new()?))
-}
-
-struct Driver {
-    file: File,
-}
-
-#[repr(C)]
-struct I2cMessage {
-    address: u16,
-    flags: u16,
-    length: u16,
-    buffer: *mut u8,
-}
-
-#[repr(C)]
-struct I2cRequest {
-    messages: *mut I2cMessage,
-    count: u32,
-}
-
-impl Driver {
-    const DEVICE: &'static str = "/dev/i2c-0";
-    const ADDRESS: u16 = 0x3c;
-    const REG_ENABLE: u8 = 0x00;
-    const REG_PWM: u8 = 0x01;
-    const REG_UPDATE: u8 = 0x25;
-    const REG_MODE: u8 = 0x26;
-    const REG_FREQ: u8 = 0x4b;
-    #[cfg(all(target_os = "linux", target_env = "musl"))]
-    const I2C_RDWR: libc::c_int = 0x0707;
-    #[cfg(any(
-        not(target_os = "linux"),
-        all(target_os = "linux", not(target_env = "musl"))
-    ))]
-    const I2C_RDWR: libc::c_ulong = 0x0707;
-
-    fn new() -> Result<Self> {
-        let file = File::options()
-            .read(true)
-            .write(true)
-            .open(Self::DEVICE)
-            .with_context(|| format!("open Yandex Mini I2C device {}", Self::DEVICE))?;
-        let driver = Self { file };
-        driver.write_register(Self::REG_ENABLE, &[1])?;
-        driver.write_register(Self::REG_MODE, &[3; CHANNEL_COUNT])?;
-        driver.write_register(Self::REG_FREQ, &[1])?;
-        driver.show(&[0; CHANNEL_COUNT])?;
-        Ok(driver)
+    let mut paths = Vec::new();
+    for index in 1..=6 {
+        for channel in ["red", "green", "blue"] {
+            let path = PathBuf::from(format!(
+                "/sys/class/leds/mini2:{channel}:ring{index}/brightness"
+            ));
+            if path.exists() {
+                paths.push(path);
+            }
+        }
     }
+    Ok(Box::new(SysfsRing { paths }))
+}
 
-    fn write_register(&self, register: u8, data: &[u8]) -> Result<()> {
-        let mut bytes = Vec::with_capacity(data.len() + 1);
-        bytes.push(register);
-        bytes.extend_from_slice(data);
-        let mut message = I2cMessage {
-            address: Self::ADDRESS,
-            flags: 0,
-            length: u16::try_from(bytes.len()).context("I2C payload is too long")?,
-            buffer: bytes.as_mut_ptr(),
-        };
-        let mut request = I2cRequest {
-            messages: &mut message,
-            count: 1,
-        };
-        let result = unsafe { libc::ioctl(self.file.as_raw_fd(), Self::I2C_RDWR, &mut request) };
-        if result < 0 {
-            return Err(std::io::Error::last_os_error()).context("Yandex Mini I2C transfer");
+struct SysfsRing {
+    paths: Vec<PathBuf>,
+}
+
+impl LedBackend for SysfsRing {
+    fn show(&self, frame: &[u8]) -> Result<()> {
+        if frame.len() != CHANNEL_COUNT {
+            bail!("unexpected Yandex Mini 2 LED frame length");
+        }
+        if self.paths.is_empty() {
+            bail!("Yandex Mini 2 LED sysfs nodes are unavailable");
+        }
+        for (path, value) in self.paths.iter().zip(frame) {
+            fs::write(path, value.to_string())
+                .with_context(|| format!("write {}", path.display()))?;
         }
         Ok(())
-    }
-
-    fn show(&self, frame: &[u8; CHANNEL_COUNT]) -> Result<()> {
-        self.write_register(Self::REG_PWM, frame)?;
-        self.write_register(Self::REG_UPDATE, &[0xaa])
-    }
-}
-
-impl LedBackend for Driver {
-    fn show(&self, frame: &[u8]) -> Result<()> {
-        let frame: &[u8; CHANNEL_COUNT] = frame
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("unexpected Yandex Mini LED frame length"))?;
-        self.show(frame)
     }
 }
