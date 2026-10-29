@@ -5,6 +5,7 @@ description: Luna host runtime for Lua, Quasar and legacy plugins
 targets: [yandexmini, yandexmicro, yandexmini_2, yandexmini3, yandexmidi, yandexplum, yandexstation_2]
 files:
   bin/luna: target/$YAM_TRIPLE/release/luna
+  bin/luna-service: tools/luna-service
   bin/luna-universal: target/$YAM_TRIPLE/release/luna-universal
   bin/luna-yandexmini: target/$YAM_TRIPLE/release/luna-yandexmini
   bin/luna-yandexmicro: target/$YAM_TRIPLE/release/luna-yandexmicro

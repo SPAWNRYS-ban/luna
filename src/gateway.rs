@@ -269,7 +269,7 @@ fn default_update_interval() -> u64 {
 impl Default for UpdateSettings {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             interval_minutes: default_update_interval(),
         }
     }
@@ -1197,9 +1197,15 @@ impl PluginManager {
         let Some(run) = &self.yam_run else {
             return operation();
         };
+        // YAM_RUN is commonly tmpfs: the host can start before any YAM
+        // transaction has recreated the shared lock after a reboot.
+        fs::create_dir_all(run)?;
         let lock_path = run.join("yam.lock");
         let file = fs::OpenOptions::new()
             .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
             .open(&lock_path)
             .with_context(|| format!("open YAM lock {}", lock_path.display()))?;
         #[cfg(unix)]
@@ -1261,9 +1267,6 @@ impl PluginManager {
                     continue;
                 }
                 let reason = compatibility_error(&manifest, device);
-                let reason = if location.source == PluginSource::Yam && manifest.launch.kind == LaunchKind::Binary {
-                    Some("binary-плагины из YAM пока не поддерживаются".into())
-                } else { reason };
                 out.push(PluginInfo {
                     directory: location.root,
                     enabled: self.enabled.contains(&manifest.id),
@@ -3963,15 +3966,12 @@ async fn run_binary(
     cancelled: Arc<AtomicBool>,
 ) -> Result<()> {
     let device = app.device.lock().await.clone();
-    let (manifest, root, state_root) = {
+    let (manifest, root, state_root, yam_root) = {
         let plugins = app.plugins.lock().await;
         if !plugins.enabled.contains(&id) {
             bail!("package is disabled")
         }
         let (location, manifest) = plugins.location_and_manifest(&id)?;
-        if location.source == PluginSource::Yam {
-            bail!("binary-плагины из YAM пока не поддерживаются")
-        }
         if let Some(reason) = compatibility_error(&manifest, &device) {
             bail!("package is incompatible: {reason}")
         }
@@ -3982,7 +3982,9 @@ async fn run_binary(
         {
             bail!("binary packages require the exec permission")
         }
-        (manifest, location.root, plugins.state_root(&id))
+        let yam_root = (location.source == PluginSource::Yam)
+            .then(|| plugins.yam_root.clone()).flatten();
+        (manifest, location.root, plugins.state_root(&id), yam_root)
     };
     let token = Uuid::new_v4().to_string();
     let invocation_token = token.clone();
@@ -3995,6 +3997,15 @@ async fn run_binary(
     let result = task::spawn_blocking(move || -> Result<()> {
         let executable = manifest.launch.path(&manifest).to_string();
         safe_relative(&executable)?;
+        for directory in &manifest.launch.library_paths {
+            safe_relative(directory)?;
+        }
+        if manifest.launch.interpreter.as_deref().is_some_and(|value| value != "sh") {
+            bail!("launch.interpreter supports only sh")
+        }
+        if !root.join(&executable).is_file() {
+            bail!("binary launch path does not name a file")
+        }
         fs::create_dir_all(&state_root)?;
         let log = Arc::new(std::sync::Mutex::new(RotatingLog::open(
             state_root.join("runtime.log"),
@@ -4013,6 +4024,10 @@ async fn run_binary(
             use std::os::unix::process::CommandExt;
             command.process_group(0);
         }
+        if let Some(yam_root) = yam_root {
+            command.env("YAM_VAR", yam_root.join("var"))
+                .env("YAM_ROOT", yam_root);
+        }
         let mut child = command
             .args(&manifest.launch.args)
             .args(invocation_args)
@@ -4021,6 +4036,7 @@ async fn run_binary(
             .env("LUNA_API_URL", api_url)
             .env("LUNA_API_TOKEN", token)
             .env("LUNA_PLUGIN_ID", task_id)
+            .env("LUNA_PLUGIN_STATE", &state_root)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
@@ -4717,7 +4733,7 @@ async fn package_logs(
     State(a): State<App>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<String, ApiError> {
-    validate_id(&id)?;
+    validate_id_or_yam(&id)?;
     let path = a.plugins.lock().await.state_root(&id).join("runtime.log");
     Ok(fs::read_to_string(path).unwrap_or_default())
 }
@@ -4733,7 +4749,7 @@ async fn runtime_permission(
     headers: &HeaderMap,
     permission: &str,
 ) -> Result<(), ApiError> {
-    validate_id(id)?;
+    validate_id_or_yam(id)?;
     let token = runtime_token(headers)?;
     if app.runtime_tokens.lock().await.get(id).map(String::as_str) != Some(token) {
         return Err(ApiError(anyhow!("invalid runtime token")));

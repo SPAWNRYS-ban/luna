@@ -24,7 +24,9 @@ actions = ["pause", "resume"]
 `pause` is required. `resume`, `next` and `previous` are optional. The label is
 1–80 UTF-8 bytes without control characters. Existing packages without this
 section remain unchanged. This version uses the binary runtime API; it does
-not add Lua bindings or enable binary packages imported from YAM.
+not add Lua bindings. Binary packages imported from YAM use the same invocation
+contract when binary execution is explicitly enabled; YAM owns the payload and
+Luna owns the process. Do not start the same player as a second YAM service.
 
 ## Runtime protocol
 

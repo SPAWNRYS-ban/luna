@@ -1,0 +1,68 @@
+#!/bin/sh
+# Luna lifecycle for YAM installations on BusyBox init.
+set -eu
+ROOT=${YAM_ROOT:-/data/yam}
+STATE=$ROOT/var/yam.luna
+RUN=${LUNA_RUN:-/tmp/luna}
+YAM_RUN=${YAM_RUN:-/tmp/yam}
+LUNA_LISTEN=${LUNA_LISTEN:-127.0.0.1:8099}
+HOOK=/etc/init.d/S99zluna
+umask 077
+mkdir -p "$RUN" "$STATE" "$YAM_RUN"
+alive() {
+    [ -f "$RUN/pid" ] || return 1
+    pid=$(cat "$RUN/pid")
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    kill -0 "$pid" 2>/dev/null || return 1
+    [ "$(readlink "/proc/$pid/exe")" = "$(readlink -f "$ROOT/bin/luna")" ]
+}
+case "${1:-status}" in
+    run)
+        export YAM_ROOT="$ROOT" YAM_VAR="$ROOT/var"
+        exec "$ROOT/bin/luna" --data-dir "$STATE" --yam-root "$ROOT" --yam-run "$YAM_RUN" --listen "$LUNA_LISTEN"
+        ;;
+    start)
+        alive && exit 0
+        rm -f "$RUN/pid"
+        nohup "$0" run >"$RUN/runtime.log" 2>&1 </dev/null &
+        echo "$!" >"$RUN/pid"
+        sleep 1
+        alive || { cat "$RUN/runtime.log" >&2; rm -f "$RUN/pid"; exit 1; }
+        ;;
+    stop)
+        if alive; then
+            kill "$pid"
+            count=0
+            while alive; do
+                count=$((count+1))
+                [ "$count" -lt 24 ] || { echo 'Luna has not finished package cleanup' >&2; exit 1; }
+                sleep 1
+            done
+        fi
+        rm -f "$RUN/pid"
+        ;;
+    restart) "$0" stop; "$0" start ;;
+    status) alive && echo "Luna running (PID $pid)" ;;
+    install|uninstall)
+        action=$1
+        if [ -f "$HOOK" ] && ! grep -q '^# Managed by Luna YAM service$' "$HOOK"; then
+            echo "Refusing unmanaged $HOOK" >&2; exit 1
+        fi
+        mount -o remount,rw /
+        trap 'mount -o remount,ro /' EXIT
+        if [ "$action" = uninstall ]; then
+            "$0" stop
+            rm -f "$HOOK"
+        else
+            cat >"$HOOK" <<'EOF'
+#!/bin/sh
+# Managed by Luna YAM service
+export YAM_ROOT=/data/yam
+[ -x "$YAM_ROOT/bin/luna-service" ] || exit 0
+exec "$YAM_ROOT/bin/luna-service" "${1:-start}"
+EOF
+            chmod 755 "$HOOK"
+        fi
+        ;;
+    *) echo 'luna-service install|uninstall|start|stop|restart|status|run' >&2; exit 2 ;;
+esac
