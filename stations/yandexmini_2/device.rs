@@ -7,6 +7,7 @@ const CAPABILITIES: &[&str] = &["led.ring.rgb", "led.ring.6", "led.pattern.v1"];
 
 pub fn spec() -> StationSpec {
     StationSpec {
+        speech_protocol: None,
         model: "yandexmini_2",
         led_profile: "mini2",
         led_count: 6,

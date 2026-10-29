@@ -5,3 +5,6 @@
 /tools/build-deploy.sh
 /tools/release.sh
 /.luna-last-release
+
+__pycache__/
+*.pyc

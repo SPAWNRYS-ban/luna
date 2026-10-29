@@ -64,6 +64,7 @@ const INPUT_GESTURES: &[InputGesture] = &[
 
 pub fn spec() -> StationSpec {
     StationSpec {
+        speech_protocol: None,
         model: "yandexmini3",
         led_profile: "mini3",
         led_count: 6,

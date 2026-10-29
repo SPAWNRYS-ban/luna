@@ -31,6 +31,7 @@ const GPIO_INPUTS: &[GpioInput] = &[
 
 pub fn spec() -> StationSpec {
     StationSpec {
+        speech_protocol: Some(luna::SpeechProtocol::Direct),
         model: "yandexmini",
         led_profile: "mini1",
         led_count: 6,

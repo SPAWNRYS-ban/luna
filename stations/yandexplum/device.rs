@@ -12,6 +12,7 @@ const CAPABILITIES: &[&str] = &[
 
 pub fn spec() -> StationSpec {
     StationSpec {
+        speech_protocol: None,
         model: "yandexplum",
         led_profile: "plum",
         led_count: 3,

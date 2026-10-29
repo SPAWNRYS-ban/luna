@@ -27,6 +27,7 @@ zip = "2"
 tar = "0.4"
 libc = "0.2"
 notify = "8"
+zbus = { version = "=5.19.0", default-features = false, features = ["tokio"] }
 
 [workspace]
 resolver = "2"

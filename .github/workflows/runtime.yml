@@ -1,0 +1,52 @@
+name: Runtime integration
+on:
+  push:
+    branches: [main, feat/station-media-runtime]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --locked
+      - run: cargo build --bin luna --locked
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y dbus dbus-user-session
+          python3 tests/media_provider_http.py target/debug/luna
+          python3 tests/yam_binary_http.py target/debug/luna
+          python3 tests/yam_service.py target/debug/luna
+          dbus-run-session -- python3 tests/media_provider_http.py target/debug/luna --mpris
+  station:
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-musl-gcc
+      CARGO_PROFILE_RELEASE_STRIP: symbols
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - name: Install pinned cross compiler
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl -fL --retry 3 -o cross.tgz https://github.com/musl-cc/musl.cc/releases/download/v0.0.1/aarch64-linux-musl-cross.tgz
+          echo 'c909817856d6ceda86aa510894fa3527eac7989f0ef6e87b5721c58737a06c38  cross.tgz' | sha256sum -c -
+          tar -xzf cross.tgz
+          echo "$RUNNER_TEMP/aarch64-linux-musl-cross/bin" >> "$GITHUB_PATH"
+      - name: Compile Station binary
+        run: cargo build --release --locked --target aarch64-unknown-linux-musl --manifest-path stations/yandexmicro/Cargo.toml --bin luna-yandexmicro
+      - uses: actions/upload-artifact@v4
+        with:
+          name: luna-experimental-yandexmicro
+          path: target/aarch64-unknown-linux-musl/release/luna-yandexmicro

@@ -1,4 +1,4 @@
-use crate::process::stop_process_group;
+use crate::process::ManagedGroup;
 use anyhow::{anyhow, bail, Context, Result};
 use axum::{
     body::Body,
@@ -38,6 +38,14 @@ use crate::rooms::Room;
 mod media;
 #[path = "providers.rs"]
 mod providers;
+#[path = "focus.rs"]
+mod focus;
+#[path = "native.rs"]
+mod native;
+#[path = "mpris.rs"]
+mod mpris;
+
+pub use native::SpeechProtocol;
 
 #[derive(Parser)]
 struct Args {
@@ -161,6 +169,8 @@ pub struct StationSpec {
     pub input_actions: &'static [InputAction],
     pub input_gestures: &'static [InputGesture],
     pub gpio_inputs: &'static [GpioInput],
+    /// None means native speech control has not been verified for this firmware.
+    pub speech_protocol: Option<SpeechProtocol>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -175,6 +185,8 @@ struct Settings {
     updates: UpdateSettings,
     #[serde(default)]
     lua: LuaSettings,
+    #[serde(default)]
+    media: mpris::Settings,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LuaSettings {
@@ -327,6 +339,7 @@ impl Default for Settings {
             allow_plugin_binaries: false,
             updates: UpdateSettings::default(),
             lua: LuaSettings::default(),
+            media: mpris::Settings::default(),
         }
     }
 }
@@ -383,6 +396,12 @@ struct IpcPolicy {
 struct CommandPolicy {
     #[serde(default)]
     phrases: Vec<String>,
+    /// A final `{query}` captures a nonempty, arbitrary tail.
+    #[serde(default)]
+    patterns: Vec<String>,
+    /// Native requests that must pass through, e.g. "включи свет".
+    #[serde(default)]
+    exclude: Vec<String>,
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct Launch {
@@ -735,10 +754,10 @@ struct App {
     clock: Option<Arc<dyn ClockBackend>>,
     plugins: Arc<Mutex<PluginManager>>,
     runtime_tokens: Arc<Mutex<HashMap<String, String>>>,
-    speech_readers:
-        Arc<Mutex<HashMap<String, (String, Arc<std::sync::Mutex<media::SpeechReader>>)>>>,
-    speech_claims: Arc<Mutex<HashMap<String, (String, String, String, Instant, bool)>>>,
+    speech: Arc<media::Runtime>,
     providers: Arc<Mutex<providers::Broker>>,
+    mpris_connected: Arc<AtomicBool>,
+    focus: Arc<std::sync::Mutex<focus::Focus>>,
     custom_web: Arc<Mutex<HashMap<String, CustomWebPage>>>,
     runtime_api_url: String,
     input_actions: &'static [InputAction],
@@ -1032,6 +1051,7 @@ fn parse_pattern(s: &str) -> Result<(bool, Vec<Frame>)> {
 
 struct RunningPackage {
     cancelled: Arc<AtomicBool>,
+    cleanup_failed: Arc<AtomicBool>,
     finished: tokio::sync::watch::Receiver<bool>,
 }
 
@@ -1048,6 +1068,7 @@ impl RunningPackage {
         })
         .await
         .context("package is still stopping; cleanup has not completed")??;
+        if self.cleanup_failed.load(Ordering::SeqCst) { bail!("package output cleanup was not confirmed; replacement is blocked"); }
         Ok(())
     }
 }
@@ -2049,28 +2070,7 @@ fn normalize_command(value: &str) -> String {
         .join(" ")
 }
 fn validate_command_policy(m: &Manifest) -> Result<()> {
-    let has_commands = m
-        .permissions
-        .iter()
-        .any(|permission| permission == "commands");
-    if m.commands.phrases.is_empty() {
-        if has_commands {
-            bail!("commands permission requires a non-empty [commands].phrases list")
-        }
-        return Ok(());
-    }
-    if !has_commands {
-        bail!("[commands].phrases requires the commands permission")
-    }
-    if m.commands.phrases.len() > 8192 {
-        bail!("[commands].phrases lists more than 8192 phrases")
-    }
-    for phrase in &m.commands.phrases {
-        if phrase.len() > 128 || normalize_command(phrase).is_empty() {
-            bail!("[commands].phrases contains an invalid phrase")
-        }
-    }
-    Ok(())
+    m.commands.validate(m.permissions.iter().any(|permission| permission == "commands"))
 }
 fn command_matches(trigger: &str, transcript: &str) -> bool {
     let trigger = normalize_command(trigger);
@@ -3988,6 +3988,9 @@ async fn run_binary(
     };
     let token = Uuid::new_v4().to_string();
     let invocation_token = token.clone();
+    let quiescent = Arc::new(AtomicBool::new(false));
+    let released = quiescent.clone();
+    let cleanup_failed = app.plugins.lock().await.running.get(&id).context("package is not running")?.cleanup_failed.clone();
     app.runtime_tokens
         .lock()
         .await
@@ -4028,7 +4031,7 @@ async fn run_binary(
             command.env("YAM_VAR", yam_root.join("var"))
                 .env("YAM_ROOT", yam_root);
         }
-        let mut child = command
+        let child = command
             .args(&manifest.launch.args)
             .args(invocation_args)
             .current_dir(&root)
@@ -4040,17 +4043,18 @@ async fn run_binary(
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
+        let mut child = ManagedGroup::new(child, released, cleanup_failed);
         let pumps = [
             pump_log(child.stdout.take(), log.clone()),
             pump_log(child.stderr.take(), log),
         ];
         loop {
             if cancelled.load(Ordering::Relaxed) {
-                stop_process_group(&mut child);
+                child.stop();
                 return Ok(());
             }
             if let Some(status) = child.try_wait()? {
-                stop_process_group(&mut child);
+                child.stop();
                 for _ in 0..20 {
                     if pumps.iter().all(std::thread::JoinHandle::is_finished) {
                         break;
@@ -4065,7 +4069,7 @@ async fn run_binary(
             std::thread::sleep(Duration::from_millis(50));
         }
     })
-    .await?;
+    .await.context("binary package task failed").and_then(|result|result);
     let revoke = {
         let mut tokens = app.runtime_tokens.lock().await;
         if tokens.get(&id) == Some(&invocation_token) {
@@ -4075,9 +4079,12 @@ async fn run_binary(
             false
         }
     };
+    if quiescent.load(Ordering::SeqCst) {
+        app.providers.lock().await.release(&id, &invocation_token);
+    }
     if revoke {
-        app.speech_readers.lock().await.remove(&id);
-        app.speech_claims.lock().await.remove(&id);
+        app.focus.lock().unwrap().revoke(&id, &invocation_token);
+        app.speech.revoke(&id, &invocation_token);
     }
     result
 }
@@ -4184,6 +4191,10 @@ async fn run_package(
 async fn stop_running_package(app: &App, id: &str) -> Result<()> {
     let running = app.plugins.lock().await.running.get(id).cloned();
     if let Some(running) = running {
+        let token = app.runtime_tokens.lock().await.get(id).cloned();
+        if let Some(token) = token {
+            revoke_runtime(app, id, &token).await;
+        }
         running.stop(Duration::from_secs(20)).await?;
     }
     Ok(())
@@ -4219,6 +4230,7 @@ async fn start_package_locked(app: App, id: String, invocation_args: Vec<String>
     let (finished, receiver) = tokio::sync::watch::channel(false);
     let running = Arc::new(RunningPackage {
         cancelled: Arc::new(AtomicBool::new(false)),
+        cleanup_failed: Arc::new(AtomicBool::new(false)),
         finished: receiver,
     });
     {
@@ -4244,6 +4256,7 @@ async fn start_package_locked(app: App, id: String, invocation_args: Vec<String>
         let mut plugins = app.plugins.lock().await;
         if plugins.running.get(&id)
             .is_some_and(|current| Arc::ptr_eq(current, &running))
+            && !running.cleanup_failed.load(Ordering::SeqCst)
         {
             plugins.running.remove(&id);
         }
@@ -4398,6 +4411,7 @@ async fn run_lua_file(
         },
         commands: CommandPolicy {
             phrases: settings.command_phrases.clone(),
+            ..CommandPolicy::default()
         },
         compatibility: Compatibility::default(),
         launch: Launch::default(),
@@ -4725,8 +4739,8 @@ async fn revoke_runtime(app: &App, id: &str, expected: &str) {
         }
     };
     if revoke {
-        app.speech_readers.lock().await.remove(id);
-        app.speech_claims.lock().await.remove(id);
+        app.focus.lock().unwrap().revoke(id, expected);
+        app.speech.revoke(id, expected);
     }
 }
 async fn package_logs(
@@ -5417,6 +5431,7 @@ async fn put_settings(
     if s.web.ui && !s.web.api {
         return Err(ApiError(anyhow!("web.ui requires web.api")));
     }
+    s.media.validate()?;
     safe_relative(&s.lua.share_dir)?;
     if s.lua.share_dir.is_empty() || s.lua.max_runtime_seconds == 0 {
         return Err(ApiError(anyhow!(
@@ -5558,6 +5573,7 @@ pub async fn run_with_station(station: Option<StationSpec>) -> Result<()> {
             return Err(error).with_context(|| format!("read {}", settings_path.display()))
         }
     };
+    settings.media.validate()?;
     // A station binary carries its model in the executable name.  Only apply
     // hardware defaults when the administrator has not created settings.toml;
     // an explicit settings file remains authoritative.
@@ -5637,15 +5653,18 @@ pub async fn run_with_station(station: Option<StationSpec>) -> Result<()> {
             yam_run,
         )?)),
         runtime_tokens: Arc::new(Mutex::new(HashMap::new())),
-        speech_readers: Arc::new(Mutex::new(HashMap::new())),
-        speech_claims: Arc::new(Mutex::new(HashMap::new())),
+        speech: Arc::new(media::Runtime::new(station.and_then(|s| s.speech_protocol))),
         providers: Arc::new(Mutex::new(providers::Broker::default())),
+        mpris_connected: Arc::new(AtomicBool::new(false)),
+        focus: Arc::new(std::sync::Mutex::new(focus::Focus::default())),
         custom_web: Arc::new(Mutex::new(HashMap::new())),
         runtime_api_url: crate::updater::runtime_api_url(&args.listen)?,
         input_actions: station.map(|spec| spec.input_actions).unwrap_or(&[]),
         input_gestures: station.map(|spec| spec.input_gestures).unwrap_or(&[]),
         gpio_inputs: station.map(|spec| spec.gpio_inputs).unwrap_or(&[]),
     };
+    media::start(app.clone());
+    mpris::start(app.clone());
     let updater_device = app.device.lock().await.clone();
     start_auto_updater(
         app.clone(),
@@ -5746,18 +5765,7 @@ pub async fn run_with_station(station: Option<StationSpec>) -> Result<()> {
             .route("/api/lua/run", post(run_lua_file))
             .route("/api/lua/:id/stop", post(stop_lua_file))
             .route("/api/runtime/:id/device", get(runtime_device))
-            .route("/api/media", get(providers::status))
-            .route("/api/media/select", post(providers::select))
-            .route("/api/media/command", post(providers::transport))
-            .route("/api/runtime/:id/provider/state", post(providers::report))
-            .route("/api/runtime/:id/provider/next", post(providers::poll))
-            .route("/api/runtime/:id/provider/result", post(providers::result))
-            .route("/api/runtime/:id/media", get(media::capabilities))
-            .route("/api/runtime/:id/speech/next", post(media::speech))
-            .route(
-                "/api/runtime/:id/command/cancel",
-                post(media::cancel_command),
-            )
+            .merge(media_routes())
             .route("/api/runtime/:id/sensors", get(runtime_sensors))
             .route("/api/runtime/:id/led", post(runtime_led))
             .route("/api/runtime/:id/led/ring", post(runtime_led_ring))
@@ -5830,6 +5838,7 @@ async fn shutdown_signal() {
 }
 
 async fn stop_all_packages(app: &App) {
+    app.speech.shutdown();
     if let Err(error) = stop_clock_text() {
         tracing::warn!(%error, "failed to release clock text during shutdown");
     }
@@ -5847,7 +5856,29 @@ async fn stop_all_packages(app: &App) {
             tracing::warn!(%error, "package cleanup incomplete during shutdown");
         }
     }
+    app.speech.wait_stopped().await;
 }
+fn media_routes() -> Router<App> {
+    Router::new()
+        .route("/api/media", get(providers::status))
+        .route("/api/media/select", post(providers::select))
+        .route("/api/media/command", post(providers::transport))
+        .route("/api/runtime/:id/provider/state", post(providers::report))
+        .route("/api/runtime/:id/focus", get(focus::status))
+        .route("/api/runtime/:id/focus/acquire", post(focus::acquire))
+        .route("/api/runtime/:id/focus/release", post(focus::release))
+        .route("/api/runtime/:id/provider/next", post(providers::poll))
+        .route("/api/runtime/:id/provider/result", post(providers::result))
+        .route("/api/runtime/:id/media", get(media::capabilities))
+        .route("/api/runtime/:id/speech/next", post(media::speech))
+        .route("/api/runtime/:id/commands/next", post(media::command))
+        .route("/api/runtime/:id/speech/say", post(media::say))
+        .route(
+            "/api/runtime/:id/command/cancel",
+            post(media::cancel_command),
+        )
+}
+
 const UI: &str = include_str!("../web/index.html");
 
 #[cfg(test)]
@@ -6131,8 +6162,10 @@ mod lifecycle_tests {
             device: Arc::new(Mutex::new(DeviceProfile { model: "test".into(), architecture: "x86_64".into(), features: vec![], source: "test".into(), led: LedTopology::default() })),
             led: Arc::new(Led { settings: Arc::new(Mutex::new(LedSettings::default())), backend: None, color_order: ColorOrder::Rgb, topology: LedTopology::default() }),
             microphone: None, clock: None, plugins: Arc::new(Mutex::new(manager)),
-            runtime_tokens: Arc::new(Mutex::new(HashMap::new())), speech_readers: Arc::new(Mutex::new(HashMap::new())), speech_claims: Arc::new(Mutex::new(HashMap::new())),
+            runtime_tokens: Arc::new(Mutex::new(HashMap::new())), speech: Arc::new(media::Runtime::new(None)),
             providers: Arc::new(Mutex::new(providers::Broker::default())),
+            mpris_connected: Arc::new(AtomicBool::new(false)),
+            focus: Arc::new(std::sync::Mutex::new(focus::Focus::default())),
             custom_web: Arc::new(Mutex::new(HashMap::new())),
             runtime_api_url: "http://127.0.0.1:1".into(), input_actions: &[], input_gestures: &[], gpio_inputs: &[],
         };
@@ -6177,7 +6210,7 @@ mod lifecycle_tests {
     #[tokio::test]
     async fn incomplete_cleanup_times_out_and_remains_cancelled() {
         let (_finished, receiver) = tokio::sync::watch::channel(false);
-        let run = RunningPackage { cancelled: Arc::new(AtomicBool::new(false)), finished: receiver };
+        let run = RunningPackage { cancelled: Arc::new(AtomicBool::new(false)), cleanup_failed: Arc::new(AtomicBool::new(false)), finished: receiver };
         assert!(run.stop(Duration::from_millis(20)).await.is_err());
         assert!(run.cancelled.load(Ordering::Relaxed));
         assert!(!*run.finished.borrow());

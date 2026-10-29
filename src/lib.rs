@@ -7,5 +7,5 @@ mod updater;
 
 pub use gateway::{
     run, run_with_station, ClockBackend, ClockCommand, ColorOrder, GpioInput, InputAction,
-    InputGesture, LedBackend, LedTopology, MicrophoneBackend, MicrophoneDevice, StationSpec,
+    InputGesture, LedBackend, LedTopology, MicrophoneBackend, MicrophoneDevice, SpeechProtocol, StationSpec,
 };
