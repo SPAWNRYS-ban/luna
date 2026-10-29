@@ -7,12 +7,12 @@
   <style>
     :root { color-scheme: dark; --bg:#0d1117; --panel:#161d27; --line:#2a3645; --text:#e6edf3; --muted:#8b98a8; --accent:#62a0ff; --ok:#62d394; --bad:#ff7b72; }
     * { box-sizing:border-box; }
-    body { max-width:1280px; margin:0 auto; padding:28px 18px 60px; font:14px/1.45 system-ui,sans-serif; background:var(--bg); color:var(--text); }
-    h1 { margin:0 0 5px; font-size:30px; } h2 { margin:0 0 14px; font-size:19px; }
+    body { max-width:1280px; margin:0 auto; padding:32px 18px 60px; font:14px/1.5 system-ui,sans-serif; background:radial-gradient(circle at 85% -10%,#193a65 0,#0d1117 38%); color:var(--text); }
+    h1 { margin:0 0 5px; font-size:32px; letter-spacing:-.04em; background:linear-gradient(100deg,#fff,#8dbbff); -webkit-background-clip:text; background-clip:text; color:transparent; } h2 { margin:0 0 14px; font-size:19px; letter-spacing:-.02em; }
     h3 { margin:22px 0 10px; font-size:15px; color:#b7c5d6; }
-    p { color:var(--muted); } section { margin:16px 0; padding:18px; background:var(--panel); border:1px solid var(--line); border-radius:12px; }
+    p { color:var(--muted); } section { margin:16px 0; padding:20px; background:rgba(22,29,39,.92); border:1px solid var(--line); border-radius:14px; box-shadow:0 12px 35px rgba(0,0,0,.16); }
     button, input, textarea { border:1px solid var(--line); border-radius:7px; background:#0f151d; color:var(--text); padding:8px 10px; font:inherit; }
-    button { cursor:pointer; background:#1e4d85; border-color:#3478c8; } button:hover { background:#2867ad; }
+    button { cursor:pointer; background:linear-gradient(180deg,#2867ad,#1e4d85); border-color:#3478c8; box-shadow:0 3px 10px rgba(0,0,0,.18); } button:hover { background:#3478c8; transform:translateY(-1px); }
     button.secondary { background:#202b38; border-color:var(--line); } button.danger { background:#632b32; border-color:#9e414b; }
     button:disabled { opacity:.5; cursor:not-allowed; } textarea { width:100%; min-height:58px; resize:vertical; font:12px ui-monospace,monospace; }
     code, .method { color:#9cc4ff; font-family:ui-monospace,monospace; } .hint { color:var(--muted); font-size:12px; }
@@ -23,11 +23,20 @@
     .setting { display:flex; gap:8px; align-items:center; min-height:34px; }
     .setting input[type="number"], .setting input[type="text"] { width:100%; }
     .settings-group { margin:14px 0 0; padding:12px; border:1px solid var(--line); border-radius:8px; }
-    .endpoint { display:grid; grid-template-columns:minmax(280px,1fr) minmax(260px,1.2fr) minmax(260px,1.4fr) auto; gap:10px; align-items:start; padding:10px 0; border-top:1px solid var(--line); }
+    .endpoint { display:grid; grid-template-columns:minmax(280px,1fr) minmax(260px,1.2fr) minmax(260px,1.4fr) auto; gap:10px; align-items:start; padding:13px 10px; margin:0 -10px; border-top:1px solid var(--line); transition:background .15s; }
+    .endpoint:hover { background:rgba(98,160,255,.045); }
     .endpoint:first-of-type { border-top:0; } .endpoint-title { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     .method { font-weight:700; color:#d6a7ff; } .path { width:100%; margin-top:7px; }
     .body { min-height:68px; } .response { min-height:68px; max-height:220px; overflow:auto; margin:0; padding:9px; background:#0a0f15; border:1px solid var(--line); border-radius:7px; white-space:pre-wrap; word-break:break-word; color:#b7c5d6; }
     .response.ok { color:var(--ok); } .response.bad { color:var(--bad); }
+    .test-running { border-color:#3478c8; }
+    .web-tabs { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:18px 0 12px; padding:6px; background:rgba(22,29,39,.8); border:1px solid var(--line); border-radius:10px; }
+    .web-tabs button { padding:7px 13px; background:transparent; border-color:transparent; box-shadow:none; }
+    .web-tabs button:hover, .web-tabs button.active { background:#214d80; border-color:#3478c8; transform:none; }
+    .web-tabs .tab-plugin { background:#202b38; }
+    .custom-web-panel { display:none; padding:0; overflow:hidden; min-height:720px; }
+    .custom-web-panel iframe { display:block; width:100%; height:720px; border:0; background:#0d1117; }
+    .custom-web-empty { padding:28px; color:var(--muted); }
     .endpoint button { white-space:nowrap; } .upload-row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
     @media (max-width:900px) { .endpoint { grid-template-columns:1fr; } .endpoint button { width:max-content; } }
   </style>
@@ -35,6 +44,14 @@
 <body>
   <h1>Luna API</h1>
   <p>Каждый блок ниже отправляет запрос к endpoint и показывает его ответ.</p>
+  <nav id="web-tabs" class="web-tabs" aria-label="Разделы Luna">
+    <button class="active" data-tab="luna" onclick="selectWebTab('luna', this)">Luna</button>
+  </nav>
+
+  <section id="custom-web-panel" class="custom-web-panel">
+    <div class="custom-web-empty" id="custom-web-empty">Выберите вкладку плагина</div>
+    <iframe id="custom-web-frame" title="Custom Luna web"></iframe>
+  </section>
 
   <section>
     <div class="device-head">
@@ -42,6 +59,17 @@
       <button onclick="sendDevice()">Обновить device</button>
     </div>
     <pre id="device-response" class="response">Запрос ещё не выполнялся</pre>
+  </section>
+
+  <section>
+    <div class="device-head">
+      <div><h2>Тест API</h2><div class="hint">Проверяет безопасные функции Luna и пишет результат по каждому шагу. Функции, которые ждут действие пользователя или меняют состояние станции, будут отмечены как пропущенные.</div></div>
+      <div class="settings-actions">
+        <button id="api-test-start" onclick="runApiTest()">Запустить тест всех функций</button>
+        <button id="api-test-stop" class="danger" onclick="stopApiTest()" disabled>Остановить</button>
+      </div>
+    </div>
+    <pre id="api-test-log" class="response" style="min-height:180px;max-height:420px">Тест ещё не запускался</pre>
   </section>
 
   <section>
@@ -95,6 +123,7 @@
         <label class="setting"><input data-permission="commands" type="checkbox"> Commands</label>
         <label class="setting"><input data-permission="system" type="checkbox"> System</label>
         <label class="setting"><input data-permission="exec" type="checkbox"> Exec</label>
+        <label class="setting"><input data-permission="web" type="checkbox"> Custom Web</label>
       </div>
       <div class="settings-grid" style="margin-top:10px">
         <label>Network allow, через запятую<input id="setting-network-allow" type="text"></label>
@@ -450,9 +479,177 @@ async function uploadPackage() {
     output.textContent = result.response.status + ' ' + pretty(result.text);
   } catch (error) { output.textContent = 'Ошибка: ' + error.message; }
 }
+
+let apiTestStopped = false;
+let apiTestRunning = false;
+const apiTestLog = document.getElementById('api-test-log');
+const apiTestStart = document.getElementById('api-test-start');
+const apiTestStop = document.getElementById('api-test-stop');
+
+function testLog(message) {
+  const stamp = new Date().toLocaleTimeString();
+  if (apiTestLog.textContent === 'Тест ещё не запускался') apiTestLog.textContent = '';
+  apiTestLog.textContent += '[' + stamp + '] ' + message + '\n';
+  apiTestLog.scrollTop = apiTestLog.scrollHeight;
+}
+function testSleep(milliseconds) {
+  return new Promise(function (resolve) { setTimeout(resolve, milliseconds); });
+}
+function testJson(text) {
+  try { return JSON.parse(text); } catch (_) { return null; }
+}
+function testUnavailable(result) {
+  const body = (result.text || '').toLowerCase();
+  return result.response.status === 400 && (body.indexOf('not available') >= 0 || body.indexOf('unavailable') >= 0 || body.indexOf('unsupported') >= 0);
+}
+async function testRequest(method, path, body, timeoutMs) {
+  if (apiTestStopped) throw new Error('тест остановлен');
+  const controller = new AbortController();
+  const timer = setTimeout(function () { controller.abort(); }, timeoutMs || 5000);
+  const options = { method:method, signal:controller.signal, headers:{} };
+  if (body !== undefined) {
+    options.headers['content-type'] = 'application/json';
+    options.body = JSON.stringify(body);
+  }
+  testLog('▶ ' + method + ' /api' + path);
+  try {
+    const result = await fetchApi(path, options);
+    const parsed = testJson(result.text);
+    const compact = parsed ? JSON.stringify(parsed) : (result.text || 'OK');
+    if (result.response.ok) testLog('✓ ' + result.response.status + ' ' + compact.slice(0, 240));
+    else if (testUnavailable(result)) testLog('↷ ' + result.response.status + ' функция недоступна на этой станции');
+    else testLog('✗ ' + result.response.status + ' ' + compact.slice(0, 240));
+    return result;
+  } catch (error) {
+    if (error.name === 'AbortError') testLog('↷ таймаут: endpoint ожидает событие или ответ станции');
+    else testLog('✗ ' + error.message);
+    return null;
+  } finally { clearTimeout(timer); }
+}
+async function testPause(label) {
+  testLog('… пауза 3 секунды: ' + label);
+  await testSleep(3000);
+}
+async function testLed(path, offPath, body) {
+  const result = await testRequest('POST', path, body, 5000);
+  if (result && (result.response.ok || testUnavailable(result))) {
+    await testPause(path);
+    await testRequest('POST', offPath, undefined, 5000);
+  }
+}
+async function testClock(path, body) {
+  const result = await testRequest('POST', path, body, 7000);
+  if (result && (result.response.ok || testUnavailable(result))) {
+    await testPause(path);
+    await testRequest('POST', '/clock/off', undefined, 5000);
+  }
+}
+function testSkip(path, reason) { testLog('— ' + path + ': пропущено (' + reason + ')'); }
+async function runApiTest() {
+  if (apiTestRunning) return;
+  apiTestRunning = true;
+  apiTestStopped = false;
+  apiTestStart.disabled = true;
+  apiTestStop.disabled = false;
+  apiTestLog.className = 'response test-running';
+  apiTestLog.textContent = '';
+  testLog('Начинаю проверку API');
+  try {
+    const deviceResult = await testRequest('GET', '/device', undefined, 5000);
+    let device = deviceResult && testJson(deviceResult.text);
+    await testRequest('GET', '/settings', undefined, 5000);
+    await testRequest('GET', '/room', undefined, 5000);
+    await testRequest('GET', '/sensors', undefined, 5000);
+    await testRequest('GET', '/media', undefined, 5000);
+    await testRequest('GET', '/volume', undefined, 5000);
+    await testRequest('GET', '/clock', undefined, 5000);
+    await testRequest('GET', '/input/devices', undefined, 5000);
+    await testRequest('GET', '/microphone/devices', undefined, 5000);
+    await testRequest('GET', '/lua/files', undefined, 5000);
+    await testRequest('GET', '/plugins', undefined, 5000);
+    await testRequest('GET', '/plugins/sources', undefined, 5000);
+
+    const led = device && device.led ? device.led : {};
+    if (led.has_ring || Number(led.ring_count) > 0) await testLed('/led/ring', '/led/off/ring', {colors:['#0000FF']});
+    else testSkip('/led/ring и /led/off/ring', 'ring отсутствует');
+    if (led.has_logo || Number(led.logo_count) > 0) await testLed('/led/logo', '/led/off/logo', {colors:['#00FF00']});
+    else testSkip('/led/logo и /led/off/logo', 'logo отсутствует');
+    if (led.has_ring || led.has_logo || Number(led.ring_count) > 0 || Number(led.logo_count) > 0) await testLed('/led', '/led/off', {colors:['#FF0000']});
+    else testSkip('/led и /led/off', 'LED отсутствуют');
+
+    const clock = device && (device.clock || device.features || []);
+    if (device && (device.clock || (Array.isArray(clock) && clock.some(function (item) { return String(item).indexOf('clock') >= 0; })))) {
+      await testClock('/clock', {time:'12:34', brightness:80});
+      await testClock('/clock/text', {text:'LUNA', duration_ms:1000, brightness:80});
+    } else {
+      testSkip('/clock, /clock/text и /clock/off', 'часы отсутствуют');
+    }
+
+    testSkip('/volume/up, /volume/down, /volume/mute, /volume/unmute', 'изменяют громкость станции');
+    testSkip('/media/select и /media/command', 'управляют воспроизведением');
+    testSkip('/input/event, /input/events, /input/gpio/* и /input/*', 'ждут физическое действие пользователя');
+    testSkip('/alice/command, /alice/speech и /alice/recognize', 'ждут речь и могут передать команду штатной Алисе');
+    testSkip('/alice/speech/cancel', 'управляет текущим диалогом штатной Алисы');
+    testSkip('/microphone/record', 'записывает звук и возвращает файл');
+    testSkip('/volume POST, /device PUT, /room PUT и /settings PUT', 'изменяют состояние станции или конфигурацию');
+    testSkip('/lua/run, /lua/:id/stop и /plugins POST/*', 'изменяют состояние или запускают пользовательский код');
+    testSkip('/runtime/:id/*', 'требуют токен конкретного плагина');
+    testLog('Проверка завершена');
+  } catch (error) {
+    if (error.message !== 'тест остановлен') testLog('✗ критическая ошибка: ' + error.message);
+    else testLog('Остановлено пользователем');
+  } finally {
+    apiTestRunning = false;
+    apiTestStart.disabled = false;
+    apiTestStop.disabled = true;
+    apiTestLog.className = 'response';
+  }
+}
+function stopApiTest() { if (apiTestRunning) { apiTestStopped = true; testLog('Останавливаю после текущего запроса…'); } }
+let selectedWebTab = 'luna';
+const webTabs = document.getElementById('web-tabs');
+const customWebPanel = document.getElementById('custom-web-panel');
+const customWebFrame = document.getElementById('custom-web-frame');
+const customWebEmpty = document.getElementById('custom-web-empty');
+function selectWebTab(tab, button) {
+  selectedWebTab = tab;
+  document.querySelectorAll('#web-tabs button').forEach(function (item) { item.classList.toggle('active', item === button || item.dataset.tab === tab); });
+  document.querySelectorAll('body > section').forEach(function (section) {
+    if (section.id === 'custom-web-panel') section.style.display = tab === 'luna' ? 'none' : 'block';
+    else section.style.display = tab === 'luna' ? '' : 'none';
+  });
+  if (tab !== 'luna') {
+    const customButton = document.querySelector('#web-tabs button[data-tab="' + CSS.escape(tab) + '"]');
+    const url = customButton && customButton.dataset.url;
+    if (url) { customWebEmpty.style.display = 'none'; customWebFrame.src = url; }
+  }
+}
+async function refreshCustomWebTabs() {
+  try {
+    const result = await fetchApi('/custom-web');
+    if (!result.response.ok) return;
+    const pages = testJson(result.text) || [];
+    webTabs.querySelectorAll('.tab-plugin').forEach(function (button) { button.remove(); });
+    pages.forEach(function (page) {
+      const button = document.createElement('button');
+      button.className = 'tab-plugin';
+      button.dataset.tab = page.id;
+      button.dataset.url = page.url;
+      button.textContent = page.id;
+      button.title = 'Веб-интерфейс ' + page.id;
+      button.onclick = function () { selectWebTab(page.id, button); };
+      webTabs.appendChild(button);
+    });
+    if (selectedWebTab !== 'luna' && !pages.some(function (page) { return page.id === selectedWebTab; })) {
+      selectWebTab('luna', webTabs.querySelector('[data-tab="luna"]'));
+    }
+  } catch (_) { /* API may be unavailable while Luna is starting */ }
+}
 sendDevice();
 loadRoom();
 loadSettings();
+refreshCustomWebTabs();
+setInterval(refreshCustomWebTabs, 5000);
 </script>
 </body>
 </html>

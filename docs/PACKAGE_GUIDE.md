@@ -122,6 +122,31 @@ device.features
 device.room
 ```
 
+### Собственная веб-страница
+
+Для HTML-интерфейса добавьте `web` в `permissions`, положите страницу внутрь
+пакета и зарегистрируйте её из Lua:
+
+```toml
+permissions = ["web"]
+
+[launch]
+mode = "service"
+```
+
+```lua
+local url = register.customweb("web/index.html")
+print(url) -- /web/vasya.clock
+
+while true do
+  alice.sleep(60000)
+end
+```
+
+Страница открывается как `/web/<plugin-id>` и может обращаться к Luna API через
+`fetch('/api/...')`. Разрешены только `.html`/`.htm` из каталога пакета размером
+до 4 МБ. Регистрация действует, пока запущен плагин.
+
 Есть и совместимые PascalCase-имена: `device.HasRing`, `device.RingCount`,
 `device.HasLogo`, `device.LogoCount`, `device.HasClock`,
 `device.HasMuteButton`, `device.HasMicrophone`.

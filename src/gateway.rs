@@ -229,6 +229,8 @@ struct LuaPermissions {
     system: bool,
     #[serde(default)]
     exec: bool,
+    #[serde(default)]
+    web: bool,
 }
 fn default_lua_share_dir() -> String {
     "share/lua".into()
@@ -737,6 +739,7 @@ struct App {
         Arc<Mutex<HashMap<String, (String, Arc<std::sync::Mutex<media::SpeechReader>>)>>>,
     speech_claims: Arc<Mutex<HashMap<String, (String, String, String, Instant, bool)>>>,
     providers: Arc<Mutex<providers::Broker>>,
+    custom_web: Arc<Mutex<HashMap<String, CustomWebPage>>>,
     runtime_api_url: String,
     input_actions: &'static [InputAction],
     input_gestures: &'static [InputGesture],
@@ -774,6 +777,16 @@ struct LuaRunInfo {
     id: String,
     file: String,
     status: &'static str,
+}
+#[derive(Debug, Clone)]
+struct CustomWebPage {
+    root: PathBuf,
+    file: PathBuf,
+}
+#[derive(Debug, Clone, Serialize)]
+struct CustomWebInfo {
+    id: String,
+    url: String,
 }
 fn frame_delay() -> u64 {
     100
@@ -3070,11 +3083,15 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
     let microphone = app.microphone.clone();
     let gpio_inputs = app.gpio_inputs;
     let clock_backend = app.clock.clone();
+    let custom_web = app.custom_web.clone();
+    custom_web.lock().await.remove(&id);
     let room = Room::load(&app.root)?.room;
     let lua_settings = app.settings.lock().await.lua.clone();
     let enforce_user_lua_limits = id.starts_with("user_lua_");
     let lua_cancelled = cancelled.clone();
-    task::spawn_blocking(move || -> Result<()> {
+    let plugin_id = id.clone();
+    let web_registry = custom_web.clone();
+    let lua_result = task::spawn_blocking(move || -> Result<()> {
         let lua = Lua::new_with(
             StdLib::TABLE | StdLib::STRING | StdLib::MATH | StdLib::UTF8,
             LuaOptions::default(),
@@ -3100,6 +3117,45 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
         let globals = lua.globals();
         let api = lua.create_table()?;
         let permissions: HashSet<_> = manifest.permissions.iter().map(String::as_str).collect();
+        if permissions.contains("web") {
+            let register = lua.create_table()?;
+            let web_id = plugin_id.clone();
+            let web_root = root.clone();
+            let web_registry = web_registry.clone();
+            register.set(
+                "customweb",
+                lua.create_function(move |_, path: String| {
+                    safe_relative(&path).map_err(mlua::Error::external)?;
+                    let file = web_root.join(&path);
+                    if !file.is_file() {
+                        return Err(mlua::Error::external("custom web HTML file not found"));
+                    }
+                    let metadata = fs::metadata(&file).map_err(mlua::Error::external)?;
+                    if metadata.len() > 4 * 1024 * 1024 {
+                        return Err(mlua::Error::external(
+                            "custom web HTML file exceeds 4 MiB",
+                        ));
+                    }
+                    if !matches!(
+                        file.extension().and_then(|extension| extension.to_str()),
+                        Some("html") | Some("htm")
+                    ) {
+                        return Err(mlua::Error::external(
+                            "custom web file must have .html or .htm extension",
+                        ));
+                    }
+                    let page = CustomWebPage {
+                        root: web_root.clone(),
+                        file,
+                    };
+                    tokio::runtime::Handle::current()
+                        .block_on(web_registry.lock())
+                        .insert(web_id.clone(), page);
+                    Ok(format!("/web/{web_id}"))
+                })?,
+            )?;
+            globals.set("register", register)?;
+        }
         let available_device = device.clone();
         api.set(
             "is_available",
@@ -3893,7 +3949,10 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
         lua.load(&source).set_name(&launch_path).exec()?;
         Ok(())
     })
-    .await??;
+    .await
+    .context("Lua runtime task failed")?;
+    custom_web.lock().await.remove(&id);
+    lua_result?;
     Ok(())
 }
 
@@ -4180,6 +4239,36 @@ async fn start_package_locked(app: App, id: String, invocation_args: Vec<String>
 async fn index() -> Html<&'static str> {
     Html(UI)
 }
+async fn custom_web(
+    State(a): State<App>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Html<String>, ApiError> {
+    let page = a
+        .custom_web
+        .lock()
+        .await
+        .get(&id)
+        .cloned()
+        .ok_or_else(|| anyhow!("custom web page is not registered"))?;
+    let root = fs::canonicalize(&page.root)?;
+    let file = fs::canonicalize(&page.file)?;
+    if !file.starts_with(&root) {
+        return Err(ApiError(anyhow!("custom web path escapes plugin directory")));
+    }
+    Ok(Html(fs::read_to_string(file)?))
+}
+async fn list_custom_web(State(a): State<App>) -> Json<Vec<CustomWebInfo>> {
+    let pages = a.custom_web.lock().await;
+    let mut result: Vec<_> = pages
+        .keys()
+        .map(|id| CustomWebInfo {
+            id: id.clone(),
+            url: format!("/web/{id}"),
+        })
+        .collect();
+    result.sort_by(|left, right| left.id.cmp(&right.id));
+    Json(result)
+}
 fn lua_permissions(settings: &LuaSettings) -> Vec<String> {
     let p = &settings.permissions;
     let mut permissions = Vec::new();
@@ -4199,6 +4288,7 @@ fn lua_permissions(settings: &LuaSettings) -> Vec<String> {
         (p.commands, "commands"),
         (p.system, "system"),
         (p.exec, "exec"),
+        (p.web, "web"),
     ] {
         if enabled {
             permissions.push(name.into());
@@ -5534,6 +5624,7 @@ pub async fn run_with_station(station: Option<StationSpec>) -> Result<()> {
         speech_readers: Arc::new(Mutex::new(HashMap::new())),
         speech_claims: Arc::new(Mutex::new(HashMap::new())),
         providers: Arc::new(Mutex::new(providers::Broker::default())),
+        custom_web: Arc::new(Mutex::new(HashMap::new())),
         runtime_api_url: crate::updater::runtime_api_url(&args.listen)?,
         input_actions: station.map(|spec| spec.input_actions).unwrap_or(&[]),
         input_gestures: station.map(|spec| spec.input_gestures).unwrap_or(&[]),
@@ -5616,12 +5707,15 @@ pub async fn run_with_station(station: Option<StationSpec>) -> Result<()> {
     }
     let mut router = Router::new();
     if web.ui {
-        router = router.route("/", get(index));
+        router = router
+            .route("/", get(index))
+            .route("/web/:id", get(custom_web));
     }
     if web.api {
         router = router
             .route("/api/plugins", get(list).post(install))
             .route("/api/plugins/sources", get(plugin_sources))
+            .route("/api/custom-web", get(list_custom_web))
             .route("/api/plugins/rescan", post(rescan_plugins))
             .route("/api/plugins/registry", post(install_registry))
             .route("/api/plugins/:id", delete(remove))
@@ -6023,6 +6117,7 @@ mod lifecycle_tests {
             microphone: None, clock: None, plugins: Arc::new(Mutex::new(manager)),
             runtime_tokens: Arc::new(Mutex::new(HashMap::new())), speech_readers: Arc::new(Mutex::new(HashMap::new())), speech_claims: Arc::new(Mutex::new(HashMap::new())),
             providers: Arc::new(Mutex::new(providers::Broker::default())),
+            custom_web: Arc::new(Mutex::new(HashMap::new())),
             runtime_api_url: "http://127.0.0.1:1".into(), input_actions: &[], input_gestures: &[], gpio_inputs: &[],
         };
         start_package(app.clone(), "test-service".into(), vec![]).await.unwrap();
