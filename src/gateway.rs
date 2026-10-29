@@ -4031,6 +4031,12 @@ async fn run_binary(
             command.env("YAM_VAR", yam_root.join("var"))
                 .env("YAM_ROOT", yam_root);
         }
+        // A restart can cancel this invocation while spawn_blocking is queued.
+        // Do not start a supervisor only to terminate it before it initializes.
+        if cancelled.load(Ordering::SeqCst) {
+            released.store(true, Ordering::SeqCst);
+            return Ok(());
+        }
         let child = command
             .args(&manifest.launch.args)
             .args(invocation_args)
@@ -6152,7 +6158,10 @@ mod lifecycle_tests {
         let package = root.join("plugins/test-service");
         fs::create_dir_all(&package).unwrap();
         fs::write(package.join("plugin.toml"), "id='test-service'\nname='Test'\nversion='1.0.0'\nentry='run.sh'\npermissions=['exec']\n[launch]\nkind='binary'\npath='run.sh'\ninterpreter='sh'\n").unwrap();
-        fs::write(package.join("run.sh"), "if [ -f ready ] && [ ! -f cleaned ]; then touch overlap; fi\nrm -f cleaned\ntrap 'sleep 0.2; touch cleaned; exit 0' TERM\ntouch ready\nwhile :; do sleep 0.02; done\n").unwrap();
+        // Install recovery before acquiring/changing the simulated resource.
+        // Otherwise SIGTERM between `rm cleaned` and `trap` falsely reports
+        // overlap even though the uninitialized process has already exited.
+        fs::write(package.join("run.sh"), "trap 'sleep 0.2; touch cleaned; exit 0' TERM\nif [ -f ready ] && [ ! -f cleaned ]; then touch overlap; fi\nrm -f cleaned\ntouch ready\nwhile :; do sleep 0.02; done\n").unwrap();
         let mut manager = PluginManager::new(root.join("plugins"), None, None).unwrap();
         manager.enabled.insert("test-service".into());
         let mut settings = Settings::default();

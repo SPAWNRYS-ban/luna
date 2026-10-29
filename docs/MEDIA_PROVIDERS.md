@@ -106,7 +106,9 @@ results are rejected. A timeout or failure does not grant another source output.
 An unavailable provider remains selected until output release is known. Only
 confirmed process-group cleanup clears selection. A lost heartbeat or revoked
 token alone does not prove that the player stopped. Failed cleanup blocks a
-replacement invocation. There is no automatic fallback or resume after restart.
+replacement invocation. Install signal/cleanup handlers before acquiring shared
+resources: a package can be stopped during startup. Luna skips a queued launch
+that was already cancelled. There is no automatic fallback or resume after restart.
 
 ## Shared controls and the physical button
 

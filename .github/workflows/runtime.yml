@@ -3,6 +3,9 @@ on:
   push:
     branches: [main, feat/station-media-runtime]
   pull_request:
+concurrency:
+  group: runtime-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
