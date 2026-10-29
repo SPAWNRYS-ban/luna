@@ -473,6 +473,8 @@ struct InputQuery {
     timeout_ms: Option<u64>,
     max_events: Option<usize>,
     idle_ms: Option<u64>,
+    #[serde(default)]
+    cancel: bool,
 }
 #[derive(Debug, Deserialize)]
 struct AliceCommandQuery {
@@ -553,7 +555,7 @@ async fn get_alice_command(
     Query(query): Query<AliceCommandQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let timeout_ms = query.timeout_ms.unwrap_or(60_000).min(60_000);
-    let event = task::spawn_blocking(move || wait_alice_speech(timeout_ms))
+    let event = task::spawn_blocking(move || wait_alice_speech(timeout_ms, true))
         .await
         .context("Alice command reader task failed")??
         .context("timeout waiting for an Alice command")?;
@@ -567,11 +569,44 @@ async fn get_alice_speech(
     Query(query): Query<InputQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let timeout_ms = query.timeout_ms.unwrap_or(60_000).min(60_000);
-    let event = task::spawn_blocking(move || wait_alice_speech(timeout_ms))
+    let cancel = query.cancel;
+    // Expose interim STT updates normally. In cancel mode the purpose is to
+    // intercept the voice input before the cloud request starts, so cancel on
+    // the first non-empty partial transcript rather than waiting for final.
+    let event = task::spawn_blocking(move || wait_alice_speech(timeout_ms, false))
         .await
         .context("Alice speech reader task failed")??
         .context("timeout waiting for speech")?;
+    if cancel {
+        task::spawn_blocking(cancel_alice_dialog)
+            .await
+            .context("Alice speech cancel task failed")??;
+    }
     Ok(Json(event))
+}
+
+/// Starts the station recognizer in recognition-only mode and returns the
+/// final transcript. Unlike the regular Alice speech endpoint this does not
+/// start a cloud dialog or wait for an Alice response.
+async fn recognize_alice_speech(
+    Query(query): Query<InputQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let timeout_ms = query.timeout_ms.unwrap_or(60_000).min(60_000);
+    task::spawn_blocking(start_alice_recognition)
+        .await
+        .context("Alice recognition start task failed")??;
+    let event = task::spawn_blocking(move || wait_alice_speech(timeout_ms, true))
+        .await
+        .context("Alice recognition reader task failed")??
+        .context("timeout waiting for recognition")?;
+    Ok(Json(event))
+}
+
+async fn cancel_alice_speech() -> Result<StatusCode, ApiError> {
+    task::spawn_blocking(cancel_alice_dialog)
+        .await
+        .context("Alice speech cancel task failed")??;
+    Ok(StatusCode::OK)
 }
 
 async fn get_gpio_input(
@@ -2321,24 +2356,115 @@ fn push_bytes(out: &mut Vec<u8>, field: u64, value: &[u8]) {
     push_varint(out, value.len() as u64);
     out.extend_from_slice(value);
 }
-/// Sends `AliceCapabilityMethod::CANCEL_DIALOG` through the supported local
+fn alice_state_phase(state: &[u8]) -> &'static str {
+    match varint_field(state, 1).ok().flatten() {
+        Some(0) => "idle",
+        Some(1) => "listening",
+        Some(2) => "speaking",
+        Some(3) => "busy",
+        Some(5) => "shazam",
+        Some(6) => "unknown",
+        Some(_) => "unknown",
+        None => "recognition",
+    }
+}
+/// Replays the station's own voice-stop sequence through the supported local
 /// remoting envelope. This is deliberately exposed only as a fixed command,
 /// rather than letting a voice-command package build arbitrary aliced control
 /// frames.
 fn cancel_alice_dialog() -> Result<()> {
+    // Stop the already active audio first. STOP_CONVERSATION/CANCEL_DIALOG
+    // close the request pipeline, but do not reliably interrupt TTS that has
+    // already entered the speaking state on Mini 1.
+    send_alice_methods(&[14, 3, 1])
+}
+
+/// Ask aliced to run its recognizer without opening the normal Alice dialog.
+/// `silent` suppresses the station's feedback, while `events` asks aliced to
+/// publish recognition state through the existing AliceState IPC stream.
+fn start_alice_recognition() -> Result<()> {
+    send_alice_method_options(19, true, true, Some("luna"))
+}
+
+fn send_alice_methods(method_ids: &[u64]) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let endpoint = ipc_endpoint("aliced")?;
+    let mut stream = connect_ipc(endpoint, deadline)?.context("Quasar aliced is unavailable")?;
+
+    // Try the audio stop immediately. On Mini 1 the first few seconds of a
+    // TTS stream can be active while aliced is still emitting its handshake;
+    // this best-effort write lets the station's remoting loop observe the
+    // interruption without waiting for the handshake timeout.
+    write_alice_method(&mut stream, 14)?;
+
+    // Accept aliced's connection handshake before sending control methods.
+    // Sending three methods over one initialized connection avoids the race
+    // where the first method on a fresh socket is consumed by the handshake.
+    let handshake_deadline = Instant::now() + Duration::from_millis(250);
+    while Instant::now() < handshake_deadline {
+        if read_ipc_frame(&mut stream, handshake_deadline)?.is_none() {
+            break;
+        }
+    }
+    for &method_id in method_ids {
+        write_alice_method(&mut stream, method_id)?;
+    }
+    Ok(())
+}
+
+fn send_alice_method_options(
+    method_id: u64,
+    silent: bool,
+    events: bool,
+    source_id: Option<&str>,
+) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let endpoint = ipc_endpoint("aliced")?;
+    let mut stream = connect_ipc(endpoint, deadline)?.context("Quasar aliced is unavailable")?;
+    let handshake_deadline = Instant::now() + Duration::from_millis(250);
+    while Instant::now() < handshake_deadline {
+        if read_ipc_frame(&mut stream, handshake_deadline)?.is_none() {
+            break;
+        }
+    }
+    write_alice_method_with_options(&mut stream, method_id, silent, events, source_id)
+}
+
+fn write_alice_method(stream: &mut TcpStream, method_id: u64) -> Result<()> {
+    write_alice_method_with_options(stream, method_id, false, false, None)
+}
+
+fn write_alice_method_with_options(
+    stream: &mut TcpStream,
+    method_id: u64,
+    silent: bool,
+    events: bool,
+    source_id: Option<&str>,
+) -> Result<()> {
     let mut method = Vec::new();
     push_varint(&mut method, 1 << 3);
-    push_varint(&mut method, 3); // AliceCapabilityMethod::CANCEL_DIALOG
+    push_varint(&mut method, method_id);
+    if events {
+        push_varint(&mut method, 3 << 3);
+        push_varint(&mut method, 1);
+    }
+    if let Some(source_id) = source_id {
+        push_bytes(&mut method, 4, source_id.as_bytes());
+    }
+    if silent {
+        push_varint(&mut method, 7 << 3);
+        push_varint(&mut method, 1);
+    }
     let mut remoting = Vec::new();
     push_bytes(&mut remoting, 7, b"AliceCapability");
     push_bytes(&mut remoting, 8, &method);
     let mut message = Vec::new();
-    // Quasar's envelope is encoded as body=252 and type=253.  Sending the
-    // remoting body directly as field 210 is ignored by aliced on Mini 1.
-    push_bytes(&mut message, 252, &remoting);
-    push_varint(&mut message, 253 << 3);
-    push_varint(&mut message, 210);
-    ipc_send("aliced", &message)
+    // Mini 1 accepts remoting commands directly as QuasarMessage field 210.
+    // The 252/253 envelope is used by some event frames, but is ignored for
+    // outgoing AliceCapability commands on this firmware.
+    push_bytes(&mut message, 210, &remoting);
+    write_ipc_frame(stream, &message)?;
+    Ok(())
 }
 fn decode_ipc_event(service: &str, message: &[u8]) -> Result<Option<serde_json::Value>> {
     let message = normalize_ipc_message(message)?;
@@ -2355,7 +2481,10 @@ fn decode_ipc_event(service: &str, message: &[u8]) -> Result<Option<serde_json::
                             return Ok(Some(serde_json::json!({
                                 "type": "speech",
                                 "source": "command",
-                                "transcript": transcript
+                                "phase": "recognition",
+                                "request_id": "",
+                                "transcript": transcript,
+                                "final": true
                             })));
                         }
                     }
@@ -2373,14 +2502,39 @@ fn decode_ipc_event(service: &str, message: &[u8]) -> Result<Option<serde_json::
                     if varint_field(&request, 2)?.unwrap_or(0) != 0 {
                         if let Some(transcript) = text_field(&request, 1)? {
                             return Ok(Some(
-                                serde_json::json!({"type": "speech", "source": "command", "transcript": transcript}),
+                                serde_json::json!({
+                                    "type": "speech",
+                                    "source": "command",
+                                    "phase": "recognition",
+                                    "request_id": "",
+                                    "transcript": transcript,
+                                    "final": true
+                                }),
                             ));
                         }
                     }
                 }
             }
+            let is_final = nested_field(&state, 15)?
+                .map(|request| {
+                    varint_field(&request, 2)
+                        .ok()
+                        .flatten()
+                        .unwrap_or(0)
+                        != 0
+                })
+                .unwrap_or(false);
+            let phase = alice_state_phase(&state);
+            let request_id = text_field(&state, 7)?.unwrap_or_default();
             Ok(text_field(&state, 2)?.map(|transcript| {
-                serde_json::json!({"type": "speech", "source": "voice", "transcript": transcript})
+                serde_json::json!({
+                    "type": "speech",
+                    "source": "voice",
+                    "phase": phase,
+                    "request_id": request_id,
+                    "transcript": transcript,
+                    "final": is_final
+                })
             }))
         }
         "alarmd" => {
@@ -2579,29 +2733,27 @@ fn ipc_next(service: &str, timeout_ms: u64) -> Result<Option<serde_json::Value>>
         bail!("IPC timeout is limited to 60 seconds")
     }
     let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(1));
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Ok(None);
-        }
-        // aliced/alarmd publish events through short-lived polling
-        // connections. Keeping one socket open works on some firmware, but
-        // Mini 1 does not deliver speech events that way.
-        let wait_ms = remaining.as_millis().clamp(1, 100) as u64;
-        if let Some(payload) = ipc_receive(service, wait_ms)? {
-            // A successful wire-level parse is the minimum validation for a
-            // proto2 QuasarMessage; unknown fields are intentionally retained.
-            protobuf_fields(&payload)?;
-            if let Some(event) = decode_ipc_event(service, &payload)? {
-                return Ok(Some(event));
-            }
+    let endpoint = ipc_endpoint(service)?;
+    let Some(mut stream) = connect_ipc(endpoint, deadline)? else {
+        return Ok(None);
+    };
+
+    // aliced sends capability/state handshake frames immediately after
+    // accepting a client. The event stream is tied to this connection on
+    // Mini firmware; reopening it every 100 ms only replays the handshake,
+    // floods maind with resets, and can lose speech/command notifications.
+    while let Some(payload) = read_ipc_frame(&mut stream, deadline)? {
+        protobuf_fields(&payload)?;
+        if let Some(event) = decode_ipc_event(service, &payload)? {
+            return Ok(Some(event));
         }
     }
+    Ok(None)
 }
 
 /// Wait for the next speech event from aliced. BetterYAM's command listener
 /// accepts both `voice` and `command` events and matches the transcript itself.
-fn wait_alice_speech(timeout_ms: u64) -> Result<Option<serde_json::Value>> {
+fn wait_alice_speech(timeout_ms: u64, final_only: bool) -> Result<Option<serde_json::Value>> {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(1));
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -2612,7 +2764,9 @@ fn wait_alice_speech(timeout_ms: u64) -> Result<Option<serde_json::Value>> {
         let Some(event) = event else {
             return Ok(None);
         };
-        return Ok(Some(event));
+        if !final_only || event.get("final").and_then(serde_json::Value::as_bool) == Some(true) {
+            return Ok(Some(event));
+        }
     }
 }
 
@@ -5341,6 +5495,8 @@ pub async fn run_with_station(station: Option<StationSpec>) -> Result<()> {
             .route("/api/microphone/record", post(record_microphone))
             .route("/api/alice/command", get(get_alice_command))
             .route("/api/alice/speech", get(get_alice_speech))
+            .route("/api/alice/recognize", post(recognize_alice_speech))
+            .route("/api/alice/speech/cancel", post(cancel_alice_speech))
             .route("/api/input/devices", get(get_input_devices))
             .route("/api/input/event", get(get_input_event))
             .route("/api/input/events", get(get_input_events))
@@ -5411,7 +5567,14 @@ mod tests {
 
     #[test]
     fn ipc_decodes_speech_and_alarm() {
-        let speech = [0x1a, 0x04, 0x12, 0x02, b'h', b'i'];
+        let mut state = Vec::new();
+        push_bytes(&mut state, 2, b"hi");
+        let mut request = Vec::new();
+        push_varint(&mut request, 2 << 3);
+        push_varint(&mut request, 1);
+        push_bytes(&mut state, 15, &request);
+        let mut speech = Vec::new();
+        push_bytes(&mut speech, 3, &state);
         assert_eq!(
             decode_ipc_event("aliced", &speech).unwrap().unwrap()["transcript"],
             "hi"
@@ -5460,10 +5623,8 @@ mod tests {
         push_bytes(&mut remoting, 7, b"AliceCapability");
         push_bytes(&mut remoting, 8, &method);
         let mut message = Vec::new();
-        push_bytes(&mut message, 252, &remoting);
-        push_varint(&mut message, 253 << 3);
-        push_varint(&mut message, 210);
-        let remoting = nested_field(&message, 252).unwrap().unwrap();
+        push_bytes(&mut message, 210, &remoting);
+        let remoting = nested_field(&message, 210).unwrap().unwrap();
         assert_eq!(
             text_field(&remoting, 7).unwrap().as_deref(),
             Some("AliceCapability")
