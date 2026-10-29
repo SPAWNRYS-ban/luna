@@ -86,6 +86,20 @@ impl SpeechReader {
 
 fn speech_event(frame: &[u8]) -> Result<Option<serde_json::Value>> {
     let frame = normalize_ipc_message(frame)?;
+    // Local command spotters do not emit AliceState. They send a separate
+    // CommandSpotterCapability remoting event, already decoded by the
+    // gateway's common aliced decoder.
+    if let Some(event) = decode_ipc_event("aliced", &frame)? {
+        if event["source"].as_str() == Some("command") {
+            return Ok(Some(serde_json::json!({
+                "phase": "recognition",
+                "request_id": "",
+                "transcript": event["transcript"].as_str().unwrap_or_default(),
+                "final": true,
+                "source": "command"
+            })));
+        }
+    }
     let Some(state) = nested_field(&frame, 3)? else {
         return Ok(None);
     };
@@ -274,5 +288,22 @@ mod tests {
             assert!(!event.to_string().contains("private reply"));
         }
         assert!(speech_event(&[255]).is_err());
+    }
+
+    #[test]
+    fn schema_decodes_local_command_spotter() {
+        let mut command = Vec::new();
+        push_varint(&mut command, 1 << 3);
+        push_varint(&mut command, 2);
+        push_bytes(&mut command, 3, "громче".as_bytes());
+        let mut remoting = Vec::new();
+        push_bytes(&mut remoting, 7, b"CommandSpotterCapability");
+        push_bytes(&mut remoting, 15, &command);
+        let mut frame = Vec::new();
+        push_bytes(&mut frame, 210, &remoting);
+        let event = speech_event(&frame).unwrap().unwrap();
+        assert_eq!(event["source"], "command");
+        assert_eq!(event["transcript"], "громче");
+        assert_eq!(event["final"], true);
     }
 }
