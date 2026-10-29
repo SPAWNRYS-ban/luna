@@ -1035,7 +1035,7 @@ dependencies = [
 
 [[package]]
 name = "luna"
-version = "0.2.0"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "axum",
@@ -1062,7 +1062,7 @@ dependencies = [
 
 [[package]]
 name = "luna-yandexmicro"
-version = "0.2.0"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "luna",
@@ -1070,7 +1070,7 @@ dependencies = [
 
 [[package]]
 name = "luna-yandexmidi"
-version = "0.2.0"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "luna",
@@ -1078,7 +1078,7 @@ dependencies = [
 
 [[package]]
 name = "luna-yandexmini"
-version = "0.2.0"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "libc",
@@ -1088,7 +1088,7 @@ dependencies = [
 
 [[package]]
 name = "luna-yandexmini-2"
-version = "0.2.0"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "libc",
@@ -1097,7 +1097,7 @@ dependencies = [
 
 [[package]]
 name = "luna-yandexmini3"
-version = "0.2.0"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "luna",
@@ -1105,7 +1105,7 @@ dependencies = [
 
 [[package]]
 name = "luna-yandexplum"
-version = "0.2.0"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "luna",
@@ -1113,7 +1113,7 @@ dependencies = [
 
 [[package]]
 name = "luna-yandexstation-2"
-version = "0.2.0"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "luna",

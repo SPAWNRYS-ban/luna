@@ -157,6 +157,20 @@
       <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
     </div>
 
+    <h3>Media providers</h3>
+    <div class="endpoint" data-method="GET" data-path="/media">
+      <div><div class="endpoint-title"><span class="method">GET</span><code>/api/media</code></div><input class="path" value="/media"></div>
+      <textarea class="body"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="POST" data-path="/media/select">
+      <div><div class="endpoint-title"><span class="method">POST</span><code>/api/media/select</code></div><input class="path" value="/media/select"></div>
+      <textarea class="body">{"provider":"radio"}</textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+    <div class="endpoint" data-method="POST" data-path="/media/command">
+      <div><div class="endpoint-title"><span class="method">POST</span><code>/api/media/command</code></div><input class="path" value="/media/command"></div>
+      <textarea class="body">{"action":"pause"}</textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+
     <h3>Clock</h3>
     <div class="endpoint" data-method="GET" data-path="/clock">
       <div><div class="endpoint-title"><span class="method">GET</span><code>/api/clock</code></div><input class="path" value="/clock"></div>
@@ -169,6 +183,11 @@
     <div class="endpoint" data-method="POST" data-path="/clock/off">
       <div><div class="endpoint-title"><span class="method">POST</span><code>/api/clock/off</code></div><input class="path" value="/clock/off"></div>
       <textarea class="body" placeholder="Body не требуется"></textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
+    </div>
+
+    <div class="endpoint" data-method="POST" data-path="/clock/text">
+      <div><div class="endpoint-title"><span class="method">POST</span><code>/api/clock/text</code></div><input class="path" value="/clock/text"></div>
+      <textarea class="body">{"text":"RADIO","duration_ms":3000,"brightness":80}</textarea><pre class="response">—</pre><button onclick="sendEndpoint(this)">Отправить</button>
     </div>
 
     <h3>Input</h3>

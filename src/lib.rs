@@ -1,4 +1,6 @@
+mod process;
 mod audio;
+mod clock_text;
 mod gateway;
 pub(crate) mod rooms;
 mod updater;
