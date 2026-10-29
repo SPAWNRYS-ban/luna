@@ -1,3 +1,4 @@
+use crate::process::stop_process_group;
 use anyhow::{anyhow, bail, Context, Result};
 use axum::{
     body::Body,
@@ -21,7 +22,7 @@ use std::{
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     time::{Duration, Instant},
@@ -35,6 +36,8 @@ use crate::rooms::Room;
 
 #[path = "media.rs"]
 mod media;
+#[path = "providers.rs"]
+mod providers;
 
 #[derive(Parser)]
 struct Args {
@@ -328,6 +331,8 @@ impl Default for Settings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Manifest {
+    #[serde(default)]
+    media_provider: Option<providers::Declaration>,
     id: String,
     name: String,
     version: String,
@@ -456,6 +461,7 @@ struct SensorInfo {
 #[derive(Debug, Serialize)]
 struct ClockInfo {
     available: bool,
+    text_available: bool,
     segments: Vec<String>,
 }
 #[derive(Debug, Deserialize)]
@@ -730,6 +736,7 @@ struct App {
     speech_readers:
         Arc<Mutex<HashMap<String, (String, Arc<std::sync::Mutex<media::SpeechReader>>)>>>,
     speech_claims: Arc<Mutex<HashMap<String, (String, String, String, Instant, bool)>>>,
+    providers: Arc<Mutex<providers::Broker>>,
     runtime_api_url: String,
     input_actions: &'static [InputAction],
     input_gestures: &'static [InputGesture],
@@ -1010,13 +1017,37 @@ fn parse_pattern(s: &str) -> Result<(bool, Vec<Frame>)> {
     Ok((looped, frames))
 }
 
+struct RunningPackage {
+    cancelled: Arc<AtomicBool>,
+    finished: tokio::sync::watch::Receiver<bool>,
+}
+
+impl RunningPackage {
+    async fn stop(&self, timeout: Duration) -> Result<()> {
+        self.cancelled.store(true, Ordering::Relaxed);
+        let mut finished = self.finished.clone();
+        tokio::time::timeout(timeout, async {
+            while !*finished.borrow_and_update() {
+                finished.changed().await
+                    .context("package task ended without cleanup confirmation")?;
+            }
+            Ok::<(), anyhow::Error>(())
+        })
+        .await
+        .context("package is still stopping; cleanup has not completed")??;
+        Ok(())
+    }
+}
+
 struct PluginManager {
     root: PathBuf,
     yam_root: Option<PathBuf>,
     yam_run: Option<PathBuf>,
     enabled: HashSet<String>,
     service_enabled: HashSet<String>,
-    running: HashMap<String, Arc<AtomicBool>>,
+    running: HashMap<String, Arc<RunningPackage>>,
+    lifecycle: Arc<Mutex<()>>,
+    shutting_down: bool,
 }
 fn yam_root_from_executable(executable: &Path) -> Option<PathBuf> {
     let bin = executable.parent()?;
@@ -1103,6 +1134,8 @@ impl PluginManager {
             enabled,
             service_enabled,
             running: HashMap::new(),
+            lifecycle: Arc::new(Mutex::new(())),
+            shutting_down: false,
         })
     }
     fn save(&self) -> Result<()> {
@@ -1249,8 +1282,8 @@ impl PluginManager {
         for id in removed {
             self.enabled.remove(&id);
             self.service_enabled.remove(&id);
-            if let Some(token) = self.running.remove(&id) {
-                token.store(true, Ordering::Relaxed);
+            if let Some(run) = self.running.get(&id) {
+                run.cancelled.store(true, Ordering::Relaxed);
             }
             changed = true;
             tracing::info!(plugin=%id, "YAM plugin disappeared; stopped and removed from enabled state");
@@ -1313,6 +1346,12 @@ impl PluginManager {
         validate_input_policy(&m)?;
         validate_ipc_policy(&m)?;
         validate_command_policy(&m)?;
+        if let Some(provider) = &m.media_provider {
+            provider.validate()?;
+            if !m.permissions.iter().any(|p| p == "media.provider") {
+                bail!("media_provider requires media.provider permission");
+            }
+        }
         if m.launch.kind == LaunchKind::Binary {
             let executable = stage.join(m.launch.path(&m));
             if !executable.is_file() {
@@ -1350,8 +1389,8 @@ impl PluginManager {
         if !p.exists() {
             bail!("plugin not found")
         };
-        if let Some(token) = self.running.remove(id) {
-            token.store(true, Ordering::Relaxed);
+        if self.running.contains_key(id) {
+            bail!("package is still running")
         }
         fs::remove_dir_all(p)?;
         self.enabled.remove(id);
@@ -1786,6 +1825,12 @@ fn clock_read(layout: &ClockLayout) -> Result<Vec<(PathBuf, String)>> {
         .collect()
 }
 fn clock_write(segments: &HashMap<String, u8>) -> Result<()> {
+    validate_clock_segments(segments)?;
+    let _gate = CLOCK_TEXT_GATE.lock().unwrap_or_else(|e| e.into_inner());
+    CLOCK_TEXT_EPOCH.fetch_add(1, Ordering::SeqCst);
+    clock_write_frame(segments)
+}
+fn clock_write_frame(segments: &HashMap<String, u8>) -> Result<()> {
     let layout = clock_layout().context("segment clock is not available")?;
     let mut ownership = CLOCK_OWNERSHIP.lock().unwrap_or_else(|e| e.into_inner());
     let current = clock_read(&layout)?;
@@ -1806,6 +1851,11 @@ fn clock_write(segments: &HashMap<String, u8>) -> Result<()> {
     Ok(())
 }
 fn clock_release() -> Result<()> {
+    let _gate = CLOCK_TEXT_GATE.lock().unwrap_or_else(|e| e.into_inner());
+    CLOCK_TEXT_EPOCH.fetch_add(1, Ordering::SeqCst);
+    clock_release_frame()
+}
+fn clock_release_frame() -> Result<()> {
     let layout = clock_layout().context("segment clock is not available")?;
     let mut ownership = CLOCK_OWNERSHIP.lock().unwrap_or_else(|e| e.into_inner());
     let Some(o) = ownership.take() else {
@@ -3925,6 +3975,7 @@ async fn run_binary(
                 return Ok(());
             }
             if let Some(status) = child.try_wait()? {
+                stop_process_group(&mut child);
                 for _ in 0..20 {
                     if pumps.iter().all(std::thread::JoinHandle::is_finished) {
                         break;
@@ -3954,26 +4005,6 @@ async fn run_binary(
         app.speech_claims.lock().await.remove(&id);
     }
     result
-}
-
-/// A binary package runs as the leader of its own process group, so stopping it
-/// also reaches helpers it started (`aplay`, `arecord`, shell pipelines) instead of
-/// leaving them orphaned. The group gets SIGTERM first to let the package clean up.
-fn stop_process_group(child: &mut std::process::Child) {
-    #[cfg(unix)]
-    {
-        let group = -(child.id() as libc::pid_t);
-        unsafe { libc::kill(group, libc::SIGTERM) };
-        for _ in 0..40 {
-            if matches!(child.try_wait(), Ok(Some(_))) {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        unsafe { libc::kill(group, libc::SIGKILL) };
-    }
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 // Packages converted before `launch.interpreter` / `launch.library_paths`
@@ -4075,9 +4106,27 @@ async fn run_package(
     }
 }
 
+async fn stop_running_package(app: &App, id: &str) -> Result<()> {
+    let running = app.plugins.lock().await.running.get(id).cloned();
+    if let Some(running) = running {
+        running.stop(Duration::from_secs(20)).await?;
+    }
+    Ok(())
+}
+
 async fn start_package(app: App, id: String, invocation_args: Vec<String>) -> Result<()> {
-    let cancelled = {
-        let mut plugins = app.plugins.lock().await;
+    let lifecycle = app.plugins.lock().await.lifecycle.clone();
+    let _operation = lifecycle.lock().await;
+    start_package_locked(app, id, invocation_args).await
+}
+
+// Lifecycle callers hold the operation lock, never the plugins lock while waiting.
+async fn start_package_locked(app: App, id: String, invocation_args: Vec<String>) -> Result<()> {
+    {
+        let plugins = app.plugins.lock().await;
+        if plugins.shutting_down {
+            bail!("server is shutting down")
+        }
         if !plugins.enabled.contains(&id) {
             bail!("package is disabled")
         }
@@ -4087,41 +4136,43 @@ async fn start_package(app: App, id: String, invocation_args: Vec<String>) -> Re
         {
             bail!("binary execution disabled by administrator")
         }
-        if !invocation_args.is_empty() {
-            if manifest.launch.kind != LaunchKind::Binary {
-                bail!("only binary packages accept invocation arguments")
-            }
+        if !invocation_args.is_empty() && manifest.launch.kind != LaunchKind::Binary {
+            bail!("only binary packages accept invocation arguments")
         }
-        if let Some(previous) = plugins.running.remove(&id) {
-            previous.store(true, Ordering::Relaxed)
+    }
+    stop_running_package(&app, &id).await?;
+    let (finished, receiver) = tokio::sync::watch::channel(false);
+    let running = Arc::new(RunningPackage {
+        cancelled: Arc::new(AtomicBool::new(false)),
+        finished: receiver,
+    });
+    {
+        let mut plugins = app.plugins.lock().await;
+        if plugins.shutting_down {
+            bail!("server is shutting down");
         }
-        let token = Arc::new(AtomicBool::new(false));
-        plugins.running.insert(id.clone(), token.clone());
-        token
-    };
-    let task_app = app.clone();
-    let task_id = id.clone();
+        plugins.running.insert(id.clone(), running.clone());
+    }
     tokio::spawn(async move {
         if let Err(error) = run_package(
-            task_app.clone(),
-            task_id.clone(),
+            app.clone(),
+            id.clone(),
             invocation_args,
-            cancelled.clone(),
+            running.cancelled.clone(),
         )
         .await
         {
-            if !cancelled.load(Ordering::Relaxed) {
-                tracing::error!(package = %task_id, %error, "package execution failed")
+            if !running.cancelled.load(Ordering::Relaxed) {
+                tracing::error!(package = %id, %error, "package execution failed")
             }
         }
-        let mut plugins = task_app.plugins.lock().await;
-        if plugins
-            .running
-            .get(&task_id)
-            .is_some_and(|current| Arc::ptr_eq(current, &cancelled))
+        let mut plugins = app.plugins.lock().await;
+        if plugins.running.get(&id)
+            .is_some_and(|current| Arc::ptr_eq(current, &running))
         {
-            plugins.running.remove(&task_id);
+            plugins.running.remove(&id);
         }
+        let _ = finished.send(true);
     });
     Ok(())
 }
@@ -4221,6 +4272,7 @@ async fn run_lua_file(
         fs::copy(entry.path(), destination)?;
     }
     let manifest = Manifest {
+        media_provider: None,
         id: id.clone(),
         name: format!("User Lua: {}", request.file),
         version: "0.0.0".into(),
@@ -4274,10 +4326,10 @@ async fn stop_lua_file(
     if !id.starts_with("user_lua_") {
         return Err(ApiError(anyhow!("not a user Lua execution")));
     }
+    let lifecycle = a.plugins.lock().await.lifecycle.clone();
+    let _operation = lifecycle.lock().await;
+    stop_running_package(&a, &id).await?;
     let mut plugins = a.plugins.lock().await;
-    if let Some(token) = plugins.running.remove(&id) {
-        token.store(true, Ordering::Relaxed);
-    }
     plugins.enabled.remove(&id);
     plugins.service_enabled.remove(&id);
     plugins.save()?;
@@ -4452,26 +4504,35 @@ async fn toggle(
     State(a): State<App>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<StatusCode, ApiError> {
-    let mut p = a.plugins.lock().await;
-    let enabled = p.enabled.insert(id.clone());
-    if !enabled {
-        p.enabled.remove(&id);
-        p.service_enabled.remove(&id);
-        if let Some(token) = p.running.remove(&id) {
-            token.store(true, Ordering::Relaxed);
+    let lifecycle = a.plugins.lock().await.lifecycle.clone();
+    let _operation = lifecycle.lock().await;
+    let disabling = {
+        let mut plugins = a.plugins.lock().await;
+        plugins.manifest(&id)?;
+        let enabling = plugins.enabled.insert(id.clone());
+        if !enabling {
+            plugins.enabled.remove(&id);
+            plugins.service_enabled.remove(&id);
         }
+        plugins.save()?;
+        !enabling
+    };
+    if disabling {
+        stop_running_package(&a, &id).await?;
     }
-    p.save()?;
-    drop(p);
     Ok(StatusCode::OK)
 }
 async fn remove(
     State(a): State<App>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<StatusCode, ApiError> {
+    let lifecycle = a.plugins.lock().await.lifecycle.clone();
+    let _operation = lifecycle.lock().await;
+    stop_running_package(&a, &id).await?;
     a.plugins.lock().await.remove(&id)?;
     Ok(StatusCode::OK)
 }
+
 async fn invoke(
     State(a): State<App>,
     AxumPath(id): AxumPath<String>,
@@ -4496,6 +4557,8 @@ async fn enable_service(
     State(a): State<App>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<StatusCode, ApiError> {
+    let lifecycle = a.plugins.lock().await.lifecycle.clone();
+    let _operation = lifecycle.lock().await;
     {
         let mut plugins = a.plugins.lock().await;
         plugins.manifest(&id)?;
@@ -4503,22 +4566,23 @@ async fn enable_service(
         plugins.service_enabled.insert(id.clone());
         plugins.save()?;
     }
-    start_package(a, id, Vec::new()).await?;
+    start_package_locked(a, id, Vec::new()).await?;
     Ok(StatusCode::ACCEPTED)
 }
 async fn disable_service(
     State(a): State<App>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<StatusCode, ApiError> {
+    let lifecycle = a.plugins.lock().await.lifecycle.clone();
+    let _operation = lifecycle.lock().await;
     let revoked = a.runtime_tokens.lock().await.get(&id).cloned();
-    let mut plugins = a.plugins.lock().await;
-    plugins.manifest(&id)?;
-    plugins.service_enabled.remove(&id);
-    if let Some(token) = plugins.running.remove(&id) {
-        token.store(true, Ordering::Relaxed);
+    {
+        let mut plugins = a.plugins.lock().await;
+        plugins.manifest(&id)?;
+        plugins.service_enabled.remove(&id);
+        plugins.save()?;
     }
-    plugins.save()?;
-    drop(plugins);
+    stop_running_package(&a, &id).await?;
     if let Some(token) = revoked {
         revoke_runtime(&a, &id, &token).await;
     }
@@ -4528,22 +4592,14 @@ async fn stop_plugin(
     State(a): State<App>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<StatusCode, ApiError> {
+    let lifecycle = a.plugins.lock().await.lifecycle.clone();
+    let _operation = lifecycle.lock().await;
     let revoked = a.runtime_tokens.lock().await.get(&id).cloned();
-    let mut plugins = a.plugins.lock().await;
-    let Some(token) = plugins.running.remove(&id) else {
-        drop(plugins);
-        if let Some(token) = revoked {
-            revoke_runtime(&a, &id, &token).await;
-        }
-        return Ok(StatusCode::OK);
+    let uses_led = {
+        let plugins = a.plugins.lock().await;
+        plugins.running.contains_key(&id) && plugins.manifest(&id)?.permissions.iter().any(|p| p == "led")
     };
-    token.store(true, Ordering::Relaxed);
-    let uses_led = plugins
-        .manifest(&id)?
-        .permissions
-        .iter()
-        .any(|p| p == "led");
-    drop(plugins);
+    stop_running_package(&a, &id).await?;
     if let Some(token) = revoked {
         revoke_runtime(&a, &id, &token).await;
     }
@@ -5059,15 +5115,127 @@ async fn get_input_gesture(
         },
     }))
 }
+#[derive(Debug, Deserialize)]
+struct ClockTextRequest {
+    text: String,
+    #[serde(default = "text_brightness")]
+    brightness: u8,
+    #[serde(default = "text_duration")]
+    duration_ms: u64,
+}
+fn text_brightness() -> u8 {
+    100
+}
+fn text_duration() -> u64 {
+    2000
+}
+fn validate_clock_text(request: &ClockTextRequest) -> Result<()> {
+    anyhow::ensure!(
+        (1..=15000).contains(&request.duration_ms),
+        "duration_ms must be 1..15000"
+    );
+    crate::clock_text::frames(&request.text, request.brightness)?;
+    Ok(())
+}
+
+// Serialise frame writes with cancellation of an older overlay.
+static CLOCK_TEXT_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static CLOCK_TEXT_EPOCH: AtomicU64 = AtomicU64::new(0);
+static CLOCK_TEXT_STOPPING: AtomicBool = AtomicBool::new(false);
+
+async fn show_clock_text(request: ClockTextRequest) -> Result<()> {
+    anyhow::ensure!(
+        !CLOCK_TEXT_STOPPING.load(Ordering::SeqCst),
+        "server is shutting down"
+    );
+    validate_clock_text(&request)?;
+    let layout = clock_layout().context("text display requires a supported segment clock")?;
+    anyhow::ensure!(
+        clock_text_available(false, Some(layout)),
+        "text display requires a supported digit layout"
+    );
+    let frames = crate::clock_text::frames(&request.text, request.brightness)?;
+    let epoch = {
+        let _gate = CLOCK_TEXT_GATE.lock().unwrap_or_else(|e| e.into_inner());
+        anyhow::ensure!(
+            !CLOCK_TEXT_STOPPING.load(Ordering::SeqCst),
+            "server is shutting down"
+        );
+        CLOCK_TEXT_EPOCH.fetch_add(1, Ordering::SeqCst) + 1
+    };
+    // The task owns release even if the HTTP caller disconnects.
+    tokio::spawn(async move {
+        let duration = Duration::from_millis(request.duration_ms);
+        let start = tokio::time::Instant::now();
+        let count = frames.len() as u32;
+        let mut previous: Option<Vec<(PathBuf, String)>> = None;
+        let result: Result<()> = async {
+            for (index, frame) in frames.into_iter().enumerate() {
+                {
+                    let _gate = CLOCK_TEXT_GATE.lock().unwrap_or_else(|e| e.into_inner());
+                    if CLOCK_TEXT_EPOCH.load(Ordering::SeqCst) != epoch {
+                        return Ok(());
+                    }
+                    // A new stock frame (e.g. timer) wins; never paint over it again.
+                    if let Some(last) = &previous {
+                        if clock_read(layout)? != *last {
+                            return Ok(());
+                        }
+                    }
+                    clock_write_frame(&frame.into_iter().collect())?;
+                    previous = Some(clock_read(layout)?);
+                }
+                tokio::time::sleep_until(start + duration * (index as u32 + 1) / count).await;
+            }
+            Ok(())
+        }
+        .await;
+        let _gate = CLOCK_TEXT_GATE.lock().unwrap_or_else(|e| e.into_inner());
+        if CLOCK_TEXT_EPOCH.load(Ordering::SeqCst) == epoch {
+            clock_release_frame()?;
+        }
+        result
+    })
+    .await
+    .context("clock overlay task failed")?
+}
+
+async fn post_clock_text(
+    State(a): State<App>,
+    Json(request): Json<ClockTextRequest>,
+) -> Result<StatusCode, ApiError> {
+    if !clock_text_available(a.clock.is_some(), clock_layout()) {
+        return Err(ApiError(anyhow!("text display requires a supported digit layout")));
+    }
+    show_clock_text(request).await?;
+    Ok(StatusCode::OK)
+}
+
+fn clock_text_available(station_backend: bool, layout: Option<&ClockLayout>) -> bool {
+    !station_backend && matches!(layout, Some(ClockLayout::Cucumber(_)))
+}
+
+pub(crate) fn stop_clock_text() -> Result<()> {
+    let _gate = CLOCK_TEXT_GATE.lock().unwrap_or_else(|e| e.into_inner());
+    CLOCK_TEXT_STOPPING.store(true, Ordering::SeqCst);
+    CLOCK_TEXT_EPOCH.fetch_add(1, Ordering::SeqCst);
+    if clock_available() {
+        clock_release_frame()?;
+    }
+    Ok(())
+}
+
 async fn get_clock(State(a): State<App>) -> Json<ClockInfo> {
     if let Some(clock) = &a.clock {
         return Json(ClockInfo {
             available: true,
+            text_available: false,
             segments: clock.segments(),
         });
     }
     Json(ClockInfo {
         available: clock_available(),
+        text_available: clock_text_available(false, clock_layout()),
         segments: clock_segments(),
     })
 }
@@ -5365,6 +5533,7 @@ pub async fn run_with_station(station: Option<StationSpec>) -> Result<()> {
         runtime_tokens: Arc::new(Mutex::new(HashMap::new())),
         speech_readers: Arc::new(Mutex::new(HashMap::new())),
         speech_claims: Arc::new(Mutex::new(HashMap::new())),
+        providers: Arc::new(Mutex::new(providers::Broker::default())),
         runtime_api_url: crate::updater::runtime_api_url(&args.listen)?,
         input_actions: station.map(|spec| spec.input_actions).unwrap_or(&[]),
         input_gestures: station.map(|spec| spec.input_gestures).unwrap_or(&[]),
@@ -5467,6 +5636,12 @@ pub async fn run_with_station(station: Option<StationSpec>) -> Result<()> {
             .route("/api/lua/run", post(run_lua_file))
             .route("/api/lua/:id/stop", post(stop_lua_file))
             .route("/api/runtime/:id/device", get(runtime_device))
+            .route("/api/media", get(providers::status))
+            .route("/api/media/select", post(providers::select))
+            .route("/api/media/command", post(providers::transport))
+            .route("/api/runtime/:id/provider/state", post(providers::report))
+            .route("/api/runtime/:id/provider/next", post(providers::poll))
+            .route("/api/runtime/:id/provider/result", post(providers::result))
             .route("/api/runtime/:id/media", get(media::capabilities))
             .route("/api/runtime/:id/speech/next", post(media::speech))
             .route(
@@ -5505,6 +5680,7 @@ pub async fn run_with_station(station: Option<StationSpec>) -> Result<()> {
             .route("/api/input/:action", get(get_input_action))
             .route("/api/clock", get(get_clock).post(post_clock))
             .route("/api/clock/off", post(clock_off))
+            .route("/api/clock/text", post(post_clock_text))
             .route("/api/led", post(led_set))
             .route("/api/led/ring", post(led_set_ring))
             .route("/api/led/logo", post(led_set_logo))
@@ -5519,9 +5695,11 @@ pub async fn run_with_station(station: Option<StationSpec>) -> Result<()> {
     let l = TcpListener::bind(&args.listen).await?;
     tracing::info!("web UI: http://{}", args.listen);
     axum::serve(l, router)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            stop_all_packages(&app).await;
+        })
         .await?;
-    stop_all_packages(&app).await;
     Ok(())
 }
 
@@ -5542,21 +5720,22 @@ async fn shutdown_signal() {
 }
 
 async fn stop_all_packages(app: &App) {
-    let tokens = {
-        let plugins = app.plugins.lock().await;
+    if let Err(error) = stop_clock_text() {
+        tracing::warn!(%error, "failed to release clock text during shutdown");
+    }
+    let running = {
+        let mut plugins = app.plugins.lock().await;
+        plugins.shutting_down = true;
         plugins.running.values().cloned().collect::<Vec<_>>()
     };
-    for token in &tokens {
-        token.store(true, Ordering::Relaxed);
+    for package in &running {
+        package.cancelled.store(true, Ordering::Relaxed);
     }
-    for _ in 0..60 {
-        if app.plugins.lock().await.running.is_empty() {
-            return;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    for package in running {
+        if let Err(error) = package.stop(deadline.saturating_duration_since(tokio::time::Instant::now())).await {
+            tracing::warn!(%error, "package cleanup incomplete during shutdown");
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    if !tokens.is_empty() {
-        tracing::warn!("packages did not stop before exit");
     }
 }
 const UI: &str = include_str!("../web/index.html");
@@ -5564,6 +5743,38 @@ const UI: &str = include_str!("../web/index.html");
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_clock_request_does_not_cancel_overlay() {
+        let before = CLOCK_TEXT_EPOCH.load(Ordering::SeqCst);
+        for request in [
+            ClockRequest { time: None, brightness: None, segments: None },
+            ClockRequest { time: Some("invalid".into()), brightness: None, segments: None },
+            ClockRequest { time: None, brightness: None, segments: Some(HashMap::from([("INVALID".into(), 100)])) },
+        ] {
+            assert!(put_clock_request(None, request).is_err());
+            assert_eq!(CLOCK_TEXT_EPOCH.load(Ordering::SeqCst), before);
+        }
+    }
+
+    #[test]
+    fn clock_overlay_duration_is_bounded() {
+        for duration_ms in [0, 15001, u64::MAX] {
+            assert!(validate_clock_text(&ClockTextRequest { text: "HI".into(), brightness: 100, duration_ms }).is_err());
+        }
+        for duration_ms in [1, 99, 2000, 15000] {
+            assert!(validate_clock_text(&ClockTextRequest { text: "HI".into(), brightness: 100, duration_ms }).is_ok());
+        }
+    }
+
+    #[test]
+    fn text_capability_requires_supported_layout_and_no_station_backend() {
+        assert!(clock_text_available(false, Some(&ClockLayout::Cucumber("test".into()))));
+        assert!(!clock_text_available(true, Some(&ClockLayout::Cucumber("test".into()))));
+        assert!(!clock_text_available(false, Some(&ClockLayout::Mini2("test".into()))));
+        assert!(!clock_text_available(false, Some(&ClockLayout::Plum("test".into()))));
+        assert!(!clock_text_available(false, None));
+    }
 
     #[test]
     fn ipc_decodes_speech_and_alarm() {
@@ -5789,4 +6000,91 @@ mod tests {
         );
         fs::remove_dir_all(root).unwrap();
     }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod lifecycle_tests {
+    use super::*;
+
+    async fn fixture() -> (App, PathBuf) {
+        let root = std::env::temp_dir().join(format!("luna-lifecycle-{}", Uuid::new_v4()));
+        let package = root.join("plugins/test-service");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(package.join("plugin.toml"), "id='test-service'\nname='Test'\nversion='1.0.0'\nentry='run.sh'\npermissions=['exec']\n[launch]\nkind='binary'\npath='run.sh'\ninterpreter='sh'\n").unwrap();
+        fs::write(package.join("run.sh"), "if [ -f ready ] && [ ! -f cleaned ]; then touch overlap; fi\nrm -f cleaned\ntrap 'sleep 0.2; touch cleaned; exit 0' TERM\ntouch ready\nwhile :; do sleep 0.02; done\n").unwrap();
+        let mut manager = PluginManager::new(root.join("plugins"), None, None).unwrap();
+        manager.enabled.insert("test-service".into());
+        let mut settings = Settings::default();
+        settings.allow_plugin_binaries = true;
+        let app = App {
+            root, settings: Arc::new(Mutex::new(settings)),
+            device: Arc::new(Mutex::new(DeviceProfile { model: "test".into(), architecture: "x86_64".into(), features: vec![], source: "test".into(), led: LedTopology::default() })),
+            led: Arc::new(Led { settings: Arc::new(Mutex::new(LedSettings::default())), backend: None, color_order: ColorOrder::Rgb, topology: LedTopology::default() }),
+            microphone: None, clock: None, plugins: Arc::new(Mutex::new(manager)),
+            runtime_tokens: Arc::new(Mutex::new(HashMap::new())), speech_readers: Arc::new(Mutex::new(HashMap::new())), speech_claims: Arc::new(Mutex::new(HashMap::new())),
+            providers: Arc::new(Mutex::new(providers::Broker::default())),
+            runtime_api_url: "http://127.0.0.1:1".into(), input_actions: &[], input_gestures: &[], gpio_inputs: &[],
+        };
+        start_package(app.clone(), "test-service".into(), vec![]).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !package.join("ready").exists() { tokio::time::sleep(Duration::from_millis(10)).await; }
+        }).await.unwrap();
+        (app, package)
+    }
+
+    #[tokio::test]
+    async fn stop_endpoint_waits_for_recovery() {
+        let (app, package) = fixture().await;
+        stop_plugin(State(app.clone()), AxumPath("test-service".into())).await.unwrap();
+        let cleaned = package.join("cleaned").exists();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        fs::remove_dir_all(&app.root).unwrap();
+        assert!(cleaned, "stop endpoint returned before supervisor recovery");
+    }
+    #[tokio::test]
+    async fn restart_waits_for_previous_recovery() {
+        let (app, package) = fixture().await;
+        start_package(app.clone(), "test-service".into(), vec![]).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        stop_plugin(State(app.clone()), AxumPath("test-service".into())).await.unwrap();
+        assert!(!package.join("overlap").exists(), "replacement started before old recovery");
+        assert!(package.join("cleaned").exists());
+        fs::remove_dir_all(&app.root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn shutdown_waits_for_recovery_and_rejects_restart() {
+        let (app, package) = fixture().await;
+        stop_all_packages(&app).await;
+        assert!(package.join("cleaned").exists());
+        assert!(app.plugins.lock().await.running.is_empty());
+        assert!(app.runtime_tokens.lock().await.is_empty());
+        assert!(start_package(app.clone(), "test-service".into(), vec![]).await.is_err());
+        fs::remove_dir_all(&app.root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn incomplete_cleanup_times_out_and_remains_cancelled() {
+        let (_finished, receiver) = tokio::sync::watch::channel(false);
+        let run = RunningPackage { cancelled: Arc::new(AtomicBool::new(false)), finished: receiver };
+        assert!(run.stop(Duration::from_millis(20)).await.is_err());
+        assert!(run.cancelled.load(Ordering::Relaxed));
+        assert!(!*run.finished.borrow());
+    }
+
+    #[tokio::test]
+    async fn concurrent_restarts_do_not_overlap() {
+        let (app, package) = fixture().await;
+        let (first, second) = tokio::join!(
+            start_package(app.clone(), "test-service".into(), vec![]),
+            start_package(app.clone(), "test-service".into(), vec![]),
+        );
+        first.unwrap();
+        second.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        stop_plugin(State(app.clone()), AxumPath("test-service".into())).await.unwrap();
+        assert!(!package.join("overlap").exists(), "concurrent replacements overlapped");
+        fs::remove_dir_all(&app.root).unwrap();
+    }
+
 }
