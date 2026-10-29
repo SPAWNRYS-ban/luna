@@ -682,6 +682,9 @@ X-Luna-Token: TOKEN
 |---|---|---|
 | `GET` | `/api/runtime/:id/device` | `exec` |
 | `GET` | `/api/runtime/:id/sensors` | `sensors` |
+| `GET` | `/api/runtime/:id/media` | `exec` |
+| `POST` | `/api/runtime/:id/speech/next` | `ipc.speech` |
+| `POST` | `/api/runtime/:id/command/cancel` | `commands` + `ipc.speech` |
 | `POST` | `/api/runtime/:id/led` | `led` |
 | `POST` | `/api/runtime/:id/led/ring` | `led` |
 | `POST` | `/api/runtime/:id/led/logo` | `led` |
@@ -692,6 +695,35 @@ X-Luna-Token: TOKEN
 | `POST` | `/api/runtime/:id/clock/off` | `clock` |
 
 Runtime LED и clock используют те же JSON-тела, что и основные endpoints.
+
+`GET /media` возвращает доступные пакету возможности (`speech`, `commands`,
+`led`) и `led_count`.
+
+`POST /speech/next` возвращает следующее состояние Alice или `null` по
+таймауту:
+
+```json
+{
+  "phase": "recognition",
+  "request_id": "request-id",
+  "transcript": "громче",
+  "final": true,
+  "initial_snapshot": false
+}
+```
+
+У каждого пакета свой reader; параллельный запрос к тому же reader отклоняется.
+Для отмены объявленной команды передайте её `request_id`:
+
+```sh
+curl -X POST "$BASE/runtime/example.plugin/command/cancel" \
+  -H 'X-Luna-Token: TOKEN' \
+  -H 'Content-Type: application/json' \
+  -d '{"request_id":"request-id"}'
+```
+
+Отмена разрешена только для `commands` + `ipc.speech`, только для финальной
+фразы из `[commands].phrases` и в коротком окне после распознавания.
 
 ## Lua capability checks
 

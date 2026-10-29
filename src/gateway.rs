@@ -33,6 +33,9 @@ use uuid::Uuid;
 
 use crate::rooms::Room;
 
+#[path = "media.rs"]
+mod media;
+
 #[derive(Parser)]
 struct Args {
     #[arg(long, default_value = "127.0.0.1:8099")]
@@ -689,6 +692,9 @@ struct App {
     clock: Option<Arc<dyn ClockBackend>>,
     plugins: Arc<Mutex<PluginManager>>,
     runtime_tokens: Arc<Mutex<HashMap<String, String>>>,
+    speech_readers:
+        Arc<Mutex<HashMap<String, (String, Arc<std::sync::Mutex<media::SpeechReader>>)>>>,
+    speech_claims: Arc<Mutex<HashMap<String, (String, String, String, Instant, bool)>>>,
     runtime_api_url: String,
     input_actions: &'static [InputAction],
     input_gestures: &'static [InputGesture],
@@ -1016,6 +1022,10 @@ struct PluginLocation {
     source: PluginSource,
     package: Option<String>,
 }
+fn is_local_package_dir(name: &std::ffi::OsStr) -> bool {
+    let name = name.to_string_lossy();
+    name != "plugin-state" && !name.starts_with("user_lua_")
+}
 impl PluginManager {
     fn new(root: PathBuf, yam_root: Option<PathBuf>, yam_run: Option<PathBuf>) -> Result<Self> {
         fs::create_dir_all(&root)?;
@@ -1138,7 +1148,7 @@ impl PluginManager {
             let mut locations = Vec::new();
             for e in fs::read_dir(&self.root)? {
                 let e = e?;
-                if e.file_type()?.is_dir() && !e.file_name().to_string_lossy().starts_with("user_lua_") {
+                if e.file_type()?.is_dir() && is_local_package_dir(&e.file_name()) {
                     locations.push(PluginLocation { root: e.path(), source: PluginSource::Local, package: None });
                 }
             }
@@ -1951,8 +1961,8 @@ fn validate_command_policy(m: &Manifest) -> Result<()> {
     if !has_commands {
         bail!("[commands].phrases requires the commands permission")
     }
-    if m.commands.phrases.len() > 32 {
-        bail!("[commands].phrases lists more than 32 phrases")
+    if m.commands.phrases.len() > 8192 {
+        bail!("[commands].phrases lists more than 8192 phrases")
     }
     for phrase in &m.commands.phrases {
         if phrase.len() > 128 || normalize_command(phrase).is_empty() {
@@ -3712,6 +3722,7 @@ async fn run_binary(
         (manifest, location.root, plugins.state_root(&id))
     };
     let token = Uuid::new_v4().to_string();
+    let invocation_token = token.clone();
     app.runtime_tokens
         .lock()
         .await
@@ -3775,7 +3786,19 @@ async fn run_binary(
         }
     })
     .await?;
-    app.runtime_tokens.lock().await.remove(&id);
+    let revoke = {
+        let mut tokens = app.runtime_tokens.lock().await;
+        if tokens.get(&id) == Some(&invocation_token) {
+            tokens.remove(&id);
+            true
+        } else {
+            false
+        }
+    };
+    if revoke {
+        app.speech_readers.lock().await.remove(&id);
+        app.speech_claims.lock().await.remove(&id);
+    }
     result
 }
 
@@ -4333,6 +4356,7 @@ async fn disable_service(
     State(a): State<App>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<StatusCode, ApiError> {
+    let revoked = a.runtime_tokens.lock().await.get(&id).cloned();
     let mut plugins = a.plugins.lock().await;
     plugins.manifest(&id)?;
     plugins.service_enabled.remove(&id);
@@ -4340,14 +4364,23 @@ async fn disable_service(
         token.store(true, Ordering::Relaxed);
     }
     plugins.save()?;
+    drop(plugins);
+    if let Some(token) = revoked {
+        revoke_runtime(&a, &id, &token).await;
+    }
     Ok(StatusCode::OK)
 }
 async fn stop_plugin(
     State(a): State<App>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<StatusCode, ApiError> {
+    let revoked = a.runtime_tokens.lock().await.get(&id).cloned();
     let mut plugins = a.plugins.lock().await;
     let Some(token) = plugins.running.remove(&id) else {
+        drop(plugins);
+        if let Some(token) = revoked {
+            revoke_runtime(&a, &id, &token).await;
+        }
         return Ok(StatusCode::OK);
     };
     token.store(true, Ordering::Relaxed);
@@ -4357,10 +4390,28 @@ async fn stop_plugin(
         .iter()
         .any(|p| p == "led");
     drop(plugins);
+    if let Some(token) = revoked {
+        revoke_runtime(&a, &id, &token).await;
+    }
     if uses_led {
         let _ = a.led.off().await;
     }
     Ok(StatusCode::OK)
+}
+async fn revoke_runtime(app: &App, id: &str, expected: &str) {
+    let revoke = {
+        let mut tokens = app.runtime_tokens.lock().await;
+        if tokens.get(id).map(String::as_str) == Some(expected) {
+            tokens.remove(id);
+            true
+        } else {
+            false
+        }
+    };
+    if revoke {
+        app.speech_readers.lock().await.remove(id);
+        app.speech_claims.lock().await.remove(id);
+    }
 }
 async fn package_logs(
     State(a): State<App>,
@@ -4370,6 +4421,12 @@ async fn package_logs(
     let path = a.plugins.lock().await.state_root(&id).join("runtime.log");
     Ok(fs::read_to_string(path).unwrap_or_default())
 }
+fn runtime_token(headers: &HeaderMap) -> Result<&str> {
+    headers
+        .get("x-luna-token")
+        .and_then(|value| value.to_str().ok())
+        .context("missing X-Luna-Token")
+}
 async fn runtime_permission(
     app: &App,
     id: &str,
@@ -4377,10 +4434,7 @@ async fn runtime_permission(
     permission: &str,
 ) -> Result<(), ApiError> {
     validate_id(id)?;
-    let token = headers
-        .get("x-luna-token")
-        .and_then(|value| value.to_str().ok())
-        .context("missing X-Luna-Token")?;
+    let token = runtime_token(headers)?;
     if app.runtime_tokens.lock().await.get(id).map(String::as_str) != Some(token) {
         return Err(ApiError(anyhow!("invalid runtime token")));
     }
@@ -5155,6 +5209,8 @@ pub async fn run_with_station(station: Option<StationSpec>) -> Result<()> {
             yam_run,
         )?)),
         runtime_tokens: Arc::new(Mutex::new(HashMap::new())),
+        speech_readers: Arc::new(Mutex::new(HashMap::new())),
+        speech_claims: Arc::new(Mutex::new(HashMap::new())),
         runtime_api_url: crate::updater::runtime_api_url(&args.listen)?,
         input_actions: station.map(|spec| spec.input_actions).unwrap_or(&[]),
         input_gestures: station.map(|spec| spec.input_gestures).unwrap_or(&[]),
@@ -5257,6 +5313,12 @@ pub async fn run_with_station(station: Option<StationSpec>) -> Result<()> {
             .route("/api/lua/run", post(run_lua_file))
             .route("/api/lua/:id/stop", post(stop_lua_file))
             .route("/api/runtime/:id/device", get(runtime_device))
+            .route("/api/runtime/:id/media", get(media::capabilities))
+            .route("/api/runtime/:id/speech/next", post(media::speech))
+            .route(
+                "/api/runtime/:id/command/cancel",
+                post(media::cancel_command),
+            )
             .route("/api/runtime/:id/sensors", get(runtime_sensors))
             .route("/api/runtime/:id/led", post(runtime_led))
             .route("/api/runtime/:id/led/ring", post(runtime_led_ring))
@@ -5297,11 +5359,49 @@ pub async fn run_with_station(station: Option<StationSpec>) -> Result<()> {
     let router = router
         .layer(DefaultBodyLimit::max(67 * 1024 * 1024))
         .layer(TraceLayer::new_for_http())
-        .with_state(app);
+        .with_state(app.clone());
     let l = TcpListener::bind(&args.listen).await?;
     tracing::info!("web UI: http://{}", args.listen);
-    axum::serve(l, router).await?;
+    axum::serve(l, router)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+    stop_all_packages(&app).await;
     Ok(())
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut terminate = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = terminate.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+async fn stop_all_packages(app: &App) {
+    let tokens = {
+        let plugins = app.plugins.lock().await;
+        plugins.running.values().cloned().collect::<Vec<_>>()
+    };
+    for token in &tokens {
+        token.store(true, Ordering::Relaxed);
+    }
+    for _ in 0..60 {
+        if app.plugins.lock().await.running.is_empty() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    if !tokens.is_empty() {
+        tracing::warn!("packages did not stop before exit");
+    }
 }
 const UI: &str = include_str!("../web/index.html");
 
