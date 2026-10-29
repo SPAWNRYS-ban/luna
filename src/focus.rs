@@ -103,11 +103,12 @@ pub(super) async fn acquire(
     Json(req): Json<Acquire>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     runtime_permission(&a, &id, &headers, "media.focus").await?;
-    let lease = a
-        .focus
-        .lock()
-        .unwrap()
-        .acquire(&id, runtime_token(&headers)?, req.ttl_ms)?;
+    let tokens = a.runtime_tokens.lock().await;
+    let token = runtime_token(&headers)?;
+    if tokens.get(&id).map(String::as_str) != Some(token) {
+        return Err(ApiError(anyhow!("invalid runtime token")));
+    }
+    let lease = a.focus.lock().unwrap().acquire(&id, token, req.ttl_ms)?;
     Ok(Json(serde_json::json!({"lease":lease})))
 }
 pub(super) async fn release(
@@ -117,7 +118,11 @@ pub(super) async fn release(
     Json(req): Json<Release>,
 ) -> Result<StatusCode, ApiError> {
     runtime_permission(&a, &id, &headers, "media.focus").await?;
+    let tokens = a.runtime_tokens.lock().await;
     let token = runtime_token(&headers)?;
+    if tokens.get(&id).map(String::as_str) != Some(token) {
+        return Err(ApiError(anyhow!("invalid runtime token")));
+    }
     let mut focus = a.focus.lock().unwrap();
     let lease = focus
         .leases

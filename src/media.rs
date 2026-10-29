@@ -294,14 +294,12 @@ impl Runtime {
         Ok(current.event.clone())
     }
     fn operation(self: &Arc<Self>, id: &str, token: &str) -> Result<Operation> {
+        let mut hub = self.inner.lock().unwrap();
         if self.stopping.load(Ordering::SeqCst) {
             bail!("speech runtime is stopping");
         }
         let cancelled = Arc::new(AtomicBool::new(false));
-        self.inner
-            .lock()
-            .unwrap()
-            .operations
+        hub.operations
             .insert(id.into(), (token.into(), cancelled.clone()));
         Ok(Operation {
             runtime: self.clone(),

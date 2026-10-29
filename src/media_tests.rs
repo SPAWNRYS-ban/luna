@@ -731,3 +731,14 @@ fn reconnect_during_listening_ignores_that_entire_turn() {
     runtime.ingest(event("new", "включи jazz", true));
     assert!(runtime.reserve("new").is_ok());
 }
+
+#[test]
+fn shutdown_revokes_active_speech_and_rejects_late_operations() {
+    let runtime = Arc::new(Runtime::new(None));
+    let active = runtime.operation("p", "token").unwrap();
+    runtime.shutdown();
+    assert!(active.cancelled.load(Ordering::SeqCst));
+    assert!(runtime.operation("p", "token").is_err());
+    drop(active);
+    assert!(runtime.inner.lock().unwrap().operations.is_empty());
+}
